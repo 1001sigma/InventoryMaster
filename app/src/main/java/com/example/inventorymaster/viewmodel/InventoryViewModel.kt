@@ -109,7 +109,7 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
                     if (!batch.isNullOrBlank()) {
                         repository.getRecordsByUdi(sessionId, di, batch)
                     } else {
-                        repository.getRecordsByDi(sessionId, di)
+                        repository.getRecordsByDi(sessionId, batch!!)
                     }
                 } else {
                     repository.searchRecords(sessionId, cleanQuery)

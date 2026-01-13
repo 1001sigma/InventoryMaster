@@ -14,6 +14,9 @@ import com.example.inventorymaster.data.network.InventoryApiService
 import com.example.inventorymaster.data.dto.ProductDto
 import com.example.inventorymaster.data.dto.StockRecordDto
 import com.example.inventorymaster.data.dto.SyncData
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import com.example.inventorymaster.data.InventorySyncApi
 
 class InventoryRepositoryImpl(
     private val sessionDao: SessionDao,
@@ -198,10 +201,8 @@ class InventoryRepositoryImpl(
         }
     }
 
-    // ... (保持前面的 import 和类定义不变)
-
     // 👇 [重写] 上传逻辑
-    override suspend fun uploadSessionData(ip: String, sessionId: Long): Result<String> {
+    override suspend fun exportFullSession(ip: String, sessionId: Long): Result<String> {
         return try {
             // 1. 获取 Session 信息 (核心新增)
             // 注意：因为 sessionDao.getSessionById 可能返回 Flow 或 Entity，
@@ -268,8 +269,51 @@ class InventoryRepositoryImpl(
         }
     }
 
+    override suspend fun uploadSessionData(ip: String, sessionId: Long): Result<String> {
+        return try {
+            // 1. 先去数据库找，有没有 sync_status = 1 的数据
+            val unsyncedRecords = stockRecordDao.getUnsyncedRecords(sessionId)
+
+            if (unsyncedRecords.isEmpty()) {
+                return Result.success("没有需要同步的数据")
+            }
+
+            // 2. 临时构建 Retrofit (因为 IP 是动态的)
+            // 假设电脑端监听端口是 8080，如果不是请修改这里
+            val retrofit = Retrofit.Builder()
+                .baseUrl("http://$ip:8080")
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+
+            val api = retrofit.create(InventorySyncApi::class.java)
+
+            // 3. 发送数据
+            val response = api.pushData(unsyncedRecords)
+
+            // 4. 处理结果
+            if (response.isSuccessful) {
+                // ✅ 电脑说收到了
+                // 提取上传成功的 ID 列表
+                val successIds = unsyncedRecords.map { it.id }
+
+                // ⚠️ 关键动作：把本地状态改为“已同步 (0)”，防止下次重复传
+                stockRecordDao.markRecordsAsSynced(successIds)
+
+                Result.success("成功同步 ${successIds.size} 条记录")
+            } else {
+                // ❌ 电脑报错
+                Result.failure(Exception("服务器错误: ${response.code()} ${response.message()}"))
+            }
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            // ❌ 网络不通
+            Result.failure(Exception("连接失败: ${e.message}"))
+        }
+    }
+
     //[重写] 下载逻辑
-    override suspend fun downloadFromPC(ip: String, sessionId: Long): Result<String> {
+    override suspend fun exportdownloadFromPC(ip: String, sessionId: Long): Result<String> {
         return try {
             val api = InventoryApiService.create(ip)
             val response = api.downloadData(sessionId)
@@ -328,6 +372,43 @@ class InventoryRepositoryImpl(
 
             Result.success("同步成功！任务：${serverSession.name}")
 
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Result.failure(e)
+        }
+    }
+
+    // 🔥 [核心实现] 下载/同步数据
+    override suspend fun downloadFromPC(ip: String, sessionId: Long): Result<String> {
+        return try {
+            // 1. 准备 Retrofit
+            val retrofit = Retrofit.Builder()
+                .baseUrl("http://$ip:8080/") // 记得端口要对
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+            val api = retrofit.create(InventorySyncApi::class.java)
+
+            // 2. 发起请求
+            val response = api.pullData(sessionId)
+
+            if (response.isSuccessful) {
+                val remoteRecords = response.body()
+                if (remoteRecords.isNullOrEmpty()) {
+                    return Result.success("服务端没有新数据")
+                }
+
+                // 3. 处理下载的数据
+                // 这里有一个关键点：电脑传回来的数据，sync_status 应该是 0 (已同步)
+                // 但为了保险，我们可以强制设为 0，防止手机拿到后又以为是自己改的，再传回去形成死循环
+                val cleanRecords = remoteRecords.map { it.copy(syncStatus = 0) }
+
+                // 4. 保存进数据库 (覆盖更新)
+                stockRecordDao.insertRecords(cleanRecords)
+
+                Result.success("成功同步 ${cleanRecords.size} 条数据")
+            } else {
+                Result.failure(Exception("下载失败: ${response.code()}"))
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             Result.failure(e)

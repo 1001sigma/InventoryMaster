@@ -111,4 +111,14 @@ interface StockRecordDao {
     """)
     suspend fun findExistingRecord(sessionId: Long, di: String, batch: String, location: String): StockRecord?
 
+    // 🔥 [新增] 1. 找出所有“待上传”的记录
+    // 注意：这里用的是 sessionId (驼峰命名)，对应你表里的字段
+    @Query("SELECT * FROM stock_records WHERE sessionId = :sessionId AND sync_status = 1")
+    suspend fun getUnsyncedRecords(sessionId: Long): List<StockRecord>
+
+    // 🔥 [新增] 2. 批量更新同步状态 (上传成功后调用)
+    // 把指定 ID 的记录标记为“已同步 (0)”
+    @Query("UPDATE stock_records SET sync_status = 0 WHERE id IN (:ids)")
+    suspend fun markRecordsAsSynced(ids: List<Long>)
+
 }

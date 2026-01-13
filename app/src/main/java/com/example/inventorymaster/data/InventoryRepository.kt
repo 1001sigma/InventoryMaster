@@ -6,6 +6,23 @@ import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
 import kotlinx.coroutines.flow.Flow
 import  com.example.inventorymaster.data.model.ProductConflict
+import com.example.inventorymaster.utils.NetworkUtils // 假设你有网络工具类
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import retrofit2.http.Body
+import retrofit2.http.GET
+import retrofit2.http.POST
+import retrofit2.http.Query
+
+// 1. 定义一个简单的 API 接口 (就在 Repository 文件里定义即可，或者单独文件)
+
+interface InventorySyncApi {
+    @POST("/api/sync/push") // 👈 电脑端接收数据的接口路径，要和电脑端开发约定好
+    suspend fun pushData(@Body records: List<StockRecord>): retrofit2.Response<Map<String, Any>>
+
+    @GET("/api/sync/pull")
+    suspend fun pullData(@Query("sessionId") sessionId: Long): retrofit2.Response<List<StockRecord>>
+}
 
 interface InventoryRepository {
     // Session 相关
@@ -46,12 +63,19 @@ interface InventoryRepository {
     suspend fun updateProduct(product: ProductBase)
 
     //上传数据到电脑
+    suspend fun exportFullSession(ip: String, sessionId: Long): Result<String>
+
     // 返回值 Boolean 代表是否成功，String 代表错误信息(如果有)
     suspend fun uploadSessionData(ip: String, sessionId: Long): Result<String>
 
+
     //从电脑下载数据
+    suspend fun exportdownloadFromPC(ip: String, sessionId: Long): Result<String>
+
     suspend fun downloadFromPC(ip: String, sessionId: Long): Result<String>
 
     //拉取云端列表
     suspend fun fetchCloudSessions(ip: String): Result<List<com.example.inventorymaster.data.dto.SessionDto>>
+
+
 }
