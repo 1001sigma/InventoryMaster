@@ -1,22 +1,20 @@
 package com.example.inventorymaster.data
 
-import com.example.inventorymaster.data.dao.SessionDao
 import com.example.inventorymaster.data.dao.ProductDao
+import com.example.inventorymaster.data.dao.SessionDao
 import com.example.inventorymaster.data.dao.StockRecordDao
+import com.example.inventorymaster.data.dto.ProductDto
+import com.example.inventorymaster.data.dto.StockRecordDto
+import com.example.inventorymaster.data.dto.SyncData
+import com.example.inventorymaster.data.dto.toDto
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
 import com.example.inventorymaster.data.model.ConflictAction
 import com.example.inventorymaster.data.model.ProductConflict
-import kotlinx.coroutines.flow.Flow
 import com.example.inventorymaster.data.network.InventoryApiService
-import com.example.inventorymaster.data.dto.ProductDto
-import com.example.inventorymaster.data.dto.StockRecordDto
-import com.example.inventorymaster.data.dto.SyncData
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
-import com.example.inventorymaster.data.InventorySyncApi
+import kotlinx.coroutines.flow.Flow
 
 class InventoryRepositoryImpl(
     private val sessionDao: SessionDao,
@@ -41,6 +39,10 @@ class InventoryRepositoryImpl(
 
     override suspend fun getRecordsByUdi(sessionId: Long, di: String, batch: String): List<StockRecordCombined> {
         return stockRecordDao.getRecordsByUdi(sessionId, di, batch)
+    }
+    //临时接口实列化
+    override suspend fun getRecordsBybatchorexpiryDate(sessionId: Long, batch: String): List<StockRecordCombined> {
+        return stockRecordDao.getRecordsBybatchorexpiryDate(sessionId,batch)
     }
 
     override suspend fun getRecordsByDi(sessionId: Long, di: String): List<StockRecordCombined> {
@@ -85,8 +87,6 @@ class InventoryRepositoryImpl(
     override suspend fun searchProducts(query: String) = productDao.searchProducts(query)
     override suspend fun insertProduct(product: ProductBase) = productDao.insertProduct(product)
     override suspend fun updateProduct(product: ProductBase) { productDao.updateProduct(product) }
-
-    // ...
 
     override suspend fun checkProductConflicts(newProducts: List<ProductBase>): List<ProductConflict> {
         val conflictList = mutableListOf<ProductConflict>()
@@ -201,7 +201,7 @@ class InventoryRepositoryImpl(
         }
     }
 
-    // 👇 [重写] 上传逻辑
+    // 全量上传
     override suspend fun exportFullSession(ip: String, sessionId: Long): Result<String> {
         return try {
             // 1. 获取 Session 信息 (核心新增)
@@ -226,31 +226,19 @@ class InventoryRepositoryImpl(
                 return Result.failure(Exception("当前盘点任务没有任何数据"))
             }
 
-            val productDtoMap = mutableMapOf<String, ProductDto>()
-            val recordDtoList = mutableListOf<StockRecordDto>()
+            val recordDtoList = combinedList.map { it.record.toDto() }
 
-            for (item in combinedList) {
-                // ... (保持原本的转换逻辑不变) ...
-                val record = item.record
-                val product = item.product
-                recordDtoList.add(StockRecordDto(
-                    sessionId = record.sessionId, di = record.di, batchNumber = record.batchNumber,
-                    expiryDate = record.expiryDate, quantity = record.quantity, actualQuantity = record.actualQuantity,
-                    location = record.location, remarks = record.remarks, sourceType = record.sourceType
-                ))
-                if (product != null && !productDtoMap.containsKey(product.di)) {
-                    productDtoMap[product.di] = ProductDto(
-                        di = product.di, productName = product.productName, specification = product.specification,
-                        model = product.model, manufacturer = product.manufacturer, materialCode = product.materialCode,
-                        unit = product.unit, categoryCode = product.categoryCode, registrationCert = product.registrationCert
-                    )
-                }
-            }
+            // 2. 提取并转换产品 (利用 Kotlin 链式调用，自动去重)
+            // 逻辑：拿出所有非空产品 -> 根据 DI 去重 -> 转成 DTO
+            val productDtoList = combinedList
+                .mapNotNull { it.product } // 过滤掉没有产品资料的记录
+                .distinctBy { it.di }      // 根据 DI 去重 (替代了原来的 map.containsKey 判断)
+                .map { it.toDto() }        // 转成 DTO
 
             // 3. 打包 (现在放入 session)
             val syncData = SyncData(
                 session = sessionDto, // 👈 放入 Session
-                products = productDtoMap.values.toList(),
+                products = productDtoList,
                 records = recordDtoList
             )
 
@@ -268,7 +256,7 @@ class InventoryRepositoryImpl(
             Result.failure(e)
         }
     }
-
+    //同步上传（增量上传）
     override suspend fun uploadSessionData(ip: String, sessionId: Long): Result<String> {
         return try {
             // 1. 先去数据库找，有没有 sync_status = 1 的数据
@@ -277,16 +265,9 @@ class InventoryRepositoryImpl(
             if (unsyncedRecords.isEmpty()) {
                 return Result.success("没有需要同步的数据")
             }
-
-            // 2. 临时构建 Retrofit (因为 IP 是动态的)
-            // 假设电脑端监听端口是 8080，如果不是请修改这里
-            val retrofit = Retrofit.Builder()
-                .baseUrl("http://$ip:8080")
-                .addConverterFactory(GsonConverterFactory.create())
-                .build()
-
-            val api = retrofit.create(InventorySyncApi::class.java)
-
+            // 2. (因为 IP 是动态的)
+            // 假设电脑端监听端口是 8080，如果不是请修改InventoryApiService文件
+            val api = InventoryApiService.create(ip)
             // 3. 发送数据
             val response = api.pushData(unsyncedRecords)
 
@@ -312,7 +293,7 @@ class InventoryRepositoryImpl(
         }
     }
 
-    //[重写] 下载逻辑
+    //全量下载
     override suspend fun exportdownloadFromPC(ip: String, sessionId: Long): Result<String> {
         return try {
             val api = InventoryApiService.create(ip)
@@ -381,12 +362,7 @@ class InventoryRepositoryImpl(
     // 🔥 [核心实现] 下载/同步数据
     override suspend fun downloadFromPC(ip: String, sessionId: Long): Result<String> {
         return try {
-            // 1. 准备 Retrofit
-            val retrofit = Retrofit.Builder()
-                .baseUrl("http://$ip:8080/") // 记得端口要对
-                .addConverterFactory(GsonConverterFactory.create())
-                .build()
-            val api = retrofit.create(InventorySyncApi::class.java)
+            val api = InventoryApiService.create(ip)
 
             // 2. 发起请求
             val response = api.pullData(sessionId)

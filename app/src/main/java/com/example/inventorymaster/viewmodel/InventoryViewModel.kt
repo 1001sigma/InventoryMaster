@@ -107,9 +107,14 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
                     val di = scanResult.di!!
                     val batch = scanResult.batch
                     if (!batch.isNullOrBlank()) {
-                        repository.getRecordsByUdi(sessionId, di, batch)
+                        val diandand = repository.getRecordsByUdi(sessionId, di, batch)
+                        if (diandand.isEmpty()) {
+                            repository.getRecordsBybatchorexpiryDate(sessionId,batch)
+                        } else {
+                            repository.getRecordsByDi(sessionId, di)
+                        }
                     } else {
-                        repository.getRecordsByDi(sessionId, batch!!)
+                        repository.getRecordsByDi(sessionId, di)
                     }
                 } else {
                     repository.searchRecords(sessionId, cleanQuery)

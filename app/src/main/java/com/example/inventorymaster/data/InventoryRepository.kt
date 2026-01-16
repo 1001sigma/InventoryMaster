@@ -1,28 +1,16 @@
 package com.example.inventorymaster.data
 
+import androidx.annotation.Nullable
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
+import com.example.inventorymaster.data.model.ProductConflict
 import kotlinx.coroutines.flow.Flow
-import  com.example.inventorymaster.data.model.ProductConflict
-import com.example.inventorymaster.utils.NetworkUtils // 假设你有网络工具类
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Query
-
-// 1. 定义一个简单的 API 接口 (就在 Repository 文件里定义即可，或者单独文件)
-
-interface InventorySyncApi {
-    @POST("/api/sync/push") // 👈 电脑端接收数据的接口路径，要和电脑端开发约定好
-    suspend fun pushData(@Body records: List<StockRecord>): retrofit2.Response<Map<String, Any>>
-
-    @GET("/api/sync/pull")
-    suspend fun pullData(@Query("sessionId") sessionId: Long): retrofit2.Response<List<StockRecord>>
-}
 
 interface InventoryRepository {
     // Session 相关
@@ -54,6 +42,8 @@ interface InventoryRepository {
     suspend fun getProductByDi(di: String): ProductBase?
 
     suspend fun searchProducts(query: String): List<ProductBase>
+    //临时无UDI搜索接口 批号or 效期
+    suspend fun getRecordsBybatchorexpiryDate(sessionId: Long,batch: String): List<StockRecordCombined>
 
     suspend fun insertProduct(product: ProductBase)
     //对比接口

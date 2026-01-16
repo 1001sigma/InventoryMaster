@@ -30,16 +30,16 @@ class Gs1ParserTest {
         val gs = 0x1D.toChar()
         // 格式: 01...10...<GS>17...
         // 注意：批号是变长的，后面必须跟分隔符，或者位于字符串末尾
-        val input = "010691234567890110BATCH99${gs}17240101"
+        val input = "01069357716063321124072817260727102501010420"
 
         val result = Gs1Parser.parse(input)
 
         println("测试机器格式: $result")
 
         assertTrue("应该是 UDI", result.isUdi)
-        assertEquals("DI 匹配", "06912345678901", result.di)
-        assertEquals("批号 匹配", "BATCH99", result.batch) // 确保没把后面的 17 吃进去
-        assertEquals("效期 匹配", 20240101L, result.expiry)
+        assertEquals("DI 匹配", "06935771606332", result.di)
+        assertEquals("批号 匹配", "2501010420", result.batch) // 确保没把后面的 17 吃进去
+        assertEquals("效期 匹配", 20260727L, result.expiry)
     }
 
     // 测试用例 3: 只有 DI 的情况
@@ -62,4 +62,6 @@ class Gs1ParserTest {
         assertFalse("不应该是 UDI", result.isUdi)
         assertEquals("原始值保留", input, result.rawValue)
     }
+
+
 }

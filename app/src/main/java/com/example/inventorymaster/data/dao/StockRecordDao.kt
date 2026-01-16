@@ -78,6 +78,15 @@ interface StockRecordDao {
     """)
     suspend fun getRecordsByUdi(sessionId: Long, di: String, batch: String): List<StockRecordCombined>
 
+    //临时过度无UDI码 批号or效期
+    @Transaction
+    @Query("""
+        SELECT * FROM stock_records 
+        WHERE sessionId = :sessionId
+        AND batchNumber = :batch
+    """)
+    suspend fun getRecordsBybatchorexpiryDate(sessionId: Long,batch: String): List<StockRecordCombined>
+
     // 4. DI 精准搜索 (用于只扫了码，没扫批号的情况)
     @Transaction
     @Query("""

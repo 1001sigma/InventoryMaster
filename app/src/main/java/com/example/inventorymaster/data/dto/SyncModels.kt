@@ -1,4 +1,8 @@
 package com.example.inventorymaster.data.dto
+
+import com.example.inventorymaster.data.entity.ProductBase
+import com.example.inventorymaster.data.entity.StockRecord
+
 // 1. 总包裹
 data class SyncData(
     val session: SessionDto,
@@ -40,3 +44,34 @@ data class StockRecordDto(
     val remarks: String? = null,
     val sourceType: Int = 0
 )
+
+// 扩展函数：将 Entity 转为 DTO
+fun StockRecord.toDto(): StockRecordDto {
+    return StockRecordDto(
+        sessionId = this.sessionId,
+        di = this.di,
+        batchNumber = this.batchNumber,
+        expiryDate = this.expiryDate,
+        quantity = this.quantity,
+        actualQuantity = this.actualQuantity,
+        location = this.location,
+        remarks = this.remarks,
+        sourceType = this.sourceType
+    )
+}
+
+// 在 SyncModels.kt 中添加
+
+fun ProductBase.toDto(): ProductDto {
+    return ProductDto(
+        di = this.di,
+        productName = this.productName,
+        specification = this.specification ?: "",
+        model = this.model ?: "",
+        manufacturer = this.manufacturer ?: "",
+        materialCode = this.materialCode ?: "",
+        unit = this.unit ?: "",
+        categoryCode = this.categoryCode ?: "",
+        registrationCert = this.registrationCert ?: ""
+    )
+}
