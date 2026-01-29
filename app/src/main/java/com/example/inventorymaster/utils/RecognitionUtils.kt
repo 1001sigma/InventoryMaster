@@ -49,10 +49,6 @@ object RecognitionUtils {
         recognizer.process(image)
             .addOnSuccessListener { visionText ->
                 onSuccess(visionText)
-//                val resultText = visionText.text
-//                if (resultText.isNotBlank()) {
-//                    onSuccess(resultText)
-//                }
             }
             .addOnFailureListener { onFailure(it) }
             .addOnCompleteListener {

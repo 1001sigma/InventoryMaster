@@ -1,5 +1,7 @@
 package com.example.inventorymaster.ui
 
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import android.view.ViewGroup
@@ -36,11 +38,13 @@ import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,6 +53,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,9 +64,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.example.inventorymaster.utils.JiebaUtils // 确保导入了 JiebaUtils
 import com.example.inventorymaster.utils.RecognitionUtils
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
+import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -73,6 +80,7 @@ fun ScanScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope() // 用于协程操作
 
     // --- 状态管理 ---
     // 模式: 0 = 扫码 (QR), 1 = 识字 (OCR)
@@ -85,6 +93,31 @@ fun ScanScreen(
     // OCR 流程控制
     var isCaptureRequested = remember { AtomicBoolean(false) } // 是否按下了快门
     var rawOcrResult by remember { mutableStateOf<Text?>(null) } // OCR 结果文字
+
+    var showSettingsDialog by remember { mutableStateOf(false) }
+    var showRestartTipDialog by remember { mutableStateOf(false) }
+
+    // --- 核心功能 Launcher ---
+
+    // 1. 词典导入文件选择器
+    val importDictLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                try {
+                    // 调用 JiebaUtils 更新词典
+                    JiebaUtils.updateDict(context, uri)
+                    // 关闭设置弹窗，显示重启提示弹窗
+                    showSettingsDialog = false
+                    showRestartTipDialog = true
+                } catch (e: Exception) {
+                    Toast.makeText(context, "导入失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
 
     // 相册选择器
     val galleryLauncher = rememberLauncherForActivityResult(
@@ -234,7 +267,7 @@ fun ScanScreen(
                 }
 
                 // 设置按钮 (占位)
-                IconButton(onClick = { Toast.makeText(context, "设置暂未开放", Toast.LENGTH_SHORT).show() }) {
+                IconButton(onClick = { showSettingsDialog = true }) {
                     Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
                 }
             }
@@ -309,6 +342,26 @@ fun ScanScreen(
                 }
             )
         }
+
+        // 6. 设置弹窗
+        if (showSettingsDialog) {
+            SettingsDialog(
+                onDismiss = { showSettingsDialog = false },
+                onImportDict = {
+                    // 打开文件选择器，限制为 txt 文本
+                    importDictLauncher.launch("text/plain")
+                }
+            )
+        }
+
+        //  7. 重启提示弹窗
+        if (showRestartTipDialog) {
+            RestartTipDialog(
+                onRestart = {
+                    restartApp(context)
+                }
+            )
+        }
     }
 }
 
@@ -322,7 +375,7 @@ fun ModeButton(text: String, isSelected: Boolean, onClick: () -> Unit) {
     ) {
         Text(
             text = text,
-            color = if (isSelected) Color.Yellow else Color.White,
+            color = if (isSelected) Color.White  else Color.Gray,
             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
             fontSize = 16.sp
         )
@@ -332,25 +385,97 @@ fun ModeButton(text: String, isSelected: Boolean, onClick: () -> Unit) {
     }
 }
 
+//扫码页面
 @Composable
 fun ScannerOverlay() {
-    // 画一个模拟的扫描线动画 (简单版)
-    // 实际项目中可以用 Lottie 或者更复杂的 Canvas 动画
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 40.dp, vertical = 150.dp) // 定义扫描区域
-            .border(1.dp, Color.Green.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+        modifier = Modifier.fillMaxSize()
     ) {
-        // 这里可以加一个上下移动的横线
-        HorizontalDivider(
-            modifier = Modifier.align(Alignment.Center), // 暂时居中
-            thickness = 2.dp,
-            color = Color.Green
+        // 上下黑色遮罩
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp)  // 上方遮罩区域高度
+                .background(Color.Black.copy(alpha = 1f))  // 半透明黑色遮罩
+                .align(Alignment.TopCenter)
         )
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp)  // 下方遮罩区域高度
+                .background(Color.Black.copy(alpha = 1f))  // 半透明黑色遮罩
+                .align(Alignment.BottomCenter)
+        )
+
+        // 扫描区域边框
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 50.dp, vertical = 270.dp) // 扫描框区域
+                .border(3.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(9.dp))
+        ) {
+            // 这里可以加一个上下移动的横线
+            HorizontalDivider(
+                modifier = Modifier.align(Alignment.Center), // 居中
+                thickness = 2.dp,
+                color = Color.Green
+            )
+        }
     }
 }
 
+// 1. 设置弹窗 UI
+@Composable
+fun SettingsDialog(onDismiss: () -> Unit, onImportDict: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("设置") },
+        text = {
+            Column {
+                ListItem(
+                    headlineContent = { Text("导入自定义词库") },
+                    supportingContent = { Text("上传 user_dict.txt 以优化分词") },
+                    leadingContent = { Icon(Icons.Default.UploadFile, null) },
+                    modifier = Modifier.clickable { onImportDict() }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+}
+
+// 2. 重启提示弹窗 UI
+@Composable
+fun RestartTipDialog(onRestart: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = {}, // 禁止点击外部关闭，强制重启
+        title = { Text("需要重启") },
+        text = { Text("自定义词库已导入成功！\n应用需要重启以重新加载词典引擎。") },
+        confirmButton = {
+            Button(onClick = onRestart) {
+                Text("立即重启")
+            }
+        },
+        dismissButton = null // 不允许取消
+    )
+}
+
+// 3. 重启 APP 的逻辑
+fun restartApp(context: Context) {
+    val packageManager = context.packageManager
+    val intent = packageManager.getLaunchIntentForPackage(context.packageName)
+    val componentName = intent?.component
+    val mainIntent = Intent.makeRestartActivityTask(componentName)
+    context.startActivity(mainIntent)
+    // 杀掉当前进程，确保彻底重启
+    android.os.Process.killProcess(android.os.Process.myPid())
+}
+
+
+//文字识别的文本框模式
 @Composable
 fun OCRResultDialog(
     text: String,

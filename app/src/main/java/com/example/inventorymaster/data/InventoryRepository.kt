@@ -1,16 +1,11 @@
 package com.example.inventorymaster.data
 
-import androidx.annotation.Nullable
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
 import com.example.inventorymaster.data.model.ProductConflict
 import kotlinx.coroutines.flow.Flow
-import retrofit2.http.Body
-import retrofit2.http.GET
-import retrofit2.http.POST
-import retrofit2.http.Query
 
 interface InventoryRepository {
     // Session 相关
@@ -56,16 +51,18 @@ interface InventoryRepository {
     suspend fun exportFullSession(ip: String, sessionId: Long): Result<String>
 
     // 返回值 Boolean 代表是否成功，String 代表错误信息(如果有)
-    suspend fun uploadSessionData(ip: String, sessionId: Long): Result<String>
+    suspend fun pushUnsyncedData(sessionId: Long): Result<String>
 
 
     //从电脑下载数据
     suspend fun exportdownloadFromPC(ip: String, sessionId: Long): Result<String>
 
-    suspend fun downloadFromPC(ip: String, sessionId: Long): Result<String>
+    suspend fun pullNewData(sessionId: Long): Result<String>
 
     //拉取云端列表
     suspend fun fetchCloudSessions(ip: String): Result<List<com.example.inventorymaster.data.dto.SessionDto>>
+
+    fun saveServerIp(ip: String)
 
 
 }

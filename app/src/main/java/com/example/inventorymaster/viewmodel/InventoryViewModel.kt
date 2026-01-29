@@ -24,6 +24,10 @@ import com.example.inventorymaster.data.dto.SessionDto
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
 
 // 1. 定义 UI 状态
 data class InventoryUiState(
@@ -55,11 +59,71 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
         }
     }
 
+    // 🔥 新增：同步状态 (用于控制 UI 上的 loading 转圈或提示)
+    // 状态含义: false=空闲, true=正在同步中
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing
+
+    // 🔥 新增：同步结果消息 (用于弹 Toast，比如 "同步成功" 或 "网络错误")
+    private val _syncMessage = MutableStateFlow<String?>(null)
+    val syncMessage: StateFlow<String?> = _syncMessage
+
+    // ==========================================
+    // 🟢 动作 A: 增量下载 (Pull)
+    // ==========================================
+    // 建议在 init {} 块中或者 Activity 的 onResume 调用它
+    fun refreshData(sessionId: Long) {
+        viewModelScope.launch {
+            _isSyncing.value = true
+
+            // 切换到 IO 线程进行网络请求
+            val result = withContext(Dispatchers.IO) {
+                repository.pullNewData(sessionId)
+            }
+
+            _isSyncing.value = false
+
+            // 处理结果
+            if (result.isSuccess) {
+                // 成功了不需要弹窗，静默更新即可 (UI 会自动监听 Room 变化)
+                // 也可以记录一下日志
+                println("Pull success: ${result.getOrNull()}")
+            } else {
+                // 失败了告诉用户
+                _syncMessage.value = "同步失败: ${result.exceptionOrNull()?.message}"
+            }
+        }
+    }
+
+    // 🔴 动作 B: 增量上传 (Push)
+    // ==========================================
+    // 建议在 saveRecord / scanBarcode 等修改数据库的方法 *之后* 调用
+    //private
+    fun triggerPush(sessionId: Long) {
+        viewModelScope.launch {
+            // 注意：上传通常是静默的，不需要让 _isSyncing 转圈，以免打扰用户操作
+            // 除非你希望用户看着它传完
+
+            val result = withContext(Dispatchers.IO) {
+                repository.pushUnsyncedData(sessionId)
+            }
+
+            if (result.isFailure) {
+                // 上传失败也没关系，syncStatus 还是 1，下次会自动重试
+                // 这里可以选择不打扰用户，或者显示一个小感叹号
+                println("Push failed: ${result.exceptionOrNull()?.message}")
+            } else {
+                println("Push success")
+            }
+        }
+    }
+
+
+
     var isGlobalLoading by mutableStateOf(false)
         private set
     var lastServerIp by mutableStateOf("")
         private set
-
     fun updateServerIp(ip: String) {
         lastServerIp = ip
     }
@@ -179,12 +243,21 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
         viewModelScope.launch {
             // 🔥 自动填充同步字段
             // 注意：这里简单记录了"手动修改"，如果需要更详细的 Diff (如 1->5)，需要在 UI 层传进来或者先查库对比
-            val syncedRecord = prepareRecordForSync(record, "手动修改: 数量=${record.quantity}, 备注=${record.remarks ?: "无"}")
-
-            repository.updateRecord(syncedRecord)
-
+            // 1. 准备数据：利用 copy() 强制标记为脏数据
+            // 不管之前 prepareRecordForSync 做了什么，这里必须确保 syncStatus = 1
+            val recordToSave = record.copy(
+                syncStatus = 1, // 🚩 关键！标记为未同步
+                lastUpdateTime = System.currentTimeMillis(),
+                // 更新时间戳
+                // 如果 prepareRecordForSync 里有特殊备注逻辑，可以在这里把 remarks = ... 加上
+            )
+            repository.updateRecord(recordToSave)
+            triggerPush(record.sessionId)
             val currentQuery = _uiState.value.searchQuery
             performSearch(currentQuery, isInventoryMode = false)
+
+            // 5. (可选) 给用户一个轻提示
+            //_syncMessage.value = "保存成功，正在同步..."
         }
     }
 
@@ -213,20 +286,24 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
             // 构造业务变更后的对象
             val businessUpdatedRecord = record.copy(
                 actualQuantity = record.quantity,
-                remarks = newRemarks
+                remarks = newRemarks,
+                syncStatus = 1,                   // 🚩 标记脏数据
+                lastUpdateTime = System.currentTimeMillis()
             )
 
             // 2. 🔥 自动填充同步字段
-            val finalRecord = prepareRecordForSync(businessUpdatedRecord, "快速查验: 数量=${businessUpdatedRecord.quantity}")
+            // val finalRecord = prepareRecordForSync(businessUpdatedRecord, "快速查验: 数量=${businessUpdatedRecord.quantity}")
 
             // 3. 保存
-            repository.updateRecord(finalRecord)
+            repository.updateRecord(businessUpdatedRecord)
+            //立即触发上传
+            triggerPush(record.sessionId)
 
             // 4. 原地刷新 UI
             val currentList = _uiState.value.searchResults
             val newList = currentList.map {
                 if (it.record.id == record.id) {
-                    it.copy(record = finalRecord)
+                    it.copy(record = businessUpdatedRecord)
                 } else {
                     it
                 }
@@ -252,7 +329,7 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
     }
 
     suspend fun getExportDataForExcel(sessionId: Long): List<StockRecordCombined> {
-        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        return withContext(Dispatchers.IO) {
             repository.getExportData(sessionId)
         }
     }
@@ -374,7 +451,11 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
         val sessionId = _uiState.value.currentSessionId ?: return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true)
-            val result = repository.uploadSessionData(ip, sessionId)
+            val result = repository.exportFullSession(ip, sessionId)
+            if (result.isSuccess) {
+                repository.saveServerIp(ip)
+                updateServerIp(ip)
+            }
             _uiState.value = _uiState.value.copy(isLoading = false,
                 userMessage = if (result.isSuccess) result.getOrNull() else "上传失败: ${result.exceptionOrNull()?.message}")
         }
@@ -390,7 +471,11 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
                 return@launch
             }
             _uiState.value = _uiState.value.copy(isLoading = true)
-            val result = repository.downloadFromPC(ip, targetSessionId)
+            val result = repository.exportdownloadFromPC(ip, targetSessionId)
+            if (result.isSuccess) {
+                repository.saveServerIp(ip)
+                updateServerIp(ip)
+            }
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 userMessage = if (result.isSuccess) result.getOrNull() else "下载失败: ${result.exceptionOrNull()?.message}"

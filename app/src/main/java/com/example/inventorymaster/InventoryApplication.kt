@@ -1,6 +1,7 @@
 package com.example.inventorymaster
 
 import android.app.Application
+import android.content.Context
 import com.example.inventorymaster.data.AppDatabase
 import com.example.inventorymaster.data.InventoryRepository
 import com.example.inventorymaster.data.InventoryRepositoryImpl
@@ -14,7 +15,8 @@ class InventoryApplication : Application() {
         InventoryRepositoryImpl(
             productDao = database.productDao(),
             sessionDao = database.sessionDao(),
-            stockRecordDao = database.stockRecordDao()
+            stockRecordDao = database.stockRecordDao(),
+            prefs = getSharedPreferences("inventory_prefs", Context.MODE_PRIVATE)
         )
     }
 }

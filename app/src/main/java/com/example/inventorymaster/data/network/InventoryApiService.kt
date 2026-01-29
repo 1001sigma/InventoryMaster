@@ -1,6 +1,6 @@
 package com.example.inventorymaster.data.network
 
-import com.example.inventorymaster.data.dto.StockRecordDto
+import com.example.inventorymaster.data.dto.PushRequest
 import com.example.inventorymaster.data.dto.SyncData
 import com.example.inventorymaster.data.entity.StockRecord
 import retrofit2.Response
@@ -24,10 +24,16 @@ interface InventoryApiService {
 
     // --- 🔥 新接口 (增量同步 - 原 InventorySyncApi 的内容移到这里) ---
     @POST("/api/sync/push")
-    suspend fun pushData(@Body records: List<StockRecord>): Response<Map<String, Any>>
+    suspend fun pushData(
+        @Query("sessionUuid") sessionUuid: String,
+        @Body data: PushRequest
+    ): Response<Map<String, Any>>
 
     @GET("/api/sync/pull")
-    suspend fun pullData(@Query("sessionId") sessionId: Long): Response<List<StockRecord>>
+    suspend fun pullData(
+        @Query("sessionUuid") sessionUuid: String,
+        @Query("lastSyncTime")lastSyncTime:Long
+    ): Response<List<StockRecord>>
 
     // --- 统一的构建器 ---
     companion object {

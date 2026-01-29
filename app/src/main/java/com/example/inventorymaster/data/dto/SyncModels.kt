@@ -13,6 +13,7 @@ data class SyncData(
 // 2. [新增] 任务数据模型 (DTO)
 data class SessionDto(
     val id: Long,
+    val uuid: String,
     val name: String,
     val date: Long,
     val status: Int,
@@ -35,20 +36,29 @@ data class ProductDto(
 // 3. 库存数据模型
 data class StockRecordDto(
     val sessionId: Long,
+    val uuid: String?,
     val di: String,
     val batchNumber: String,
     val expiryDate: Long,
     val quantity: Double,
     val actualQuantity: Double? = null,
-    val location: String,
+    val location: String? = null,
     val remarks: String? = null,
-    val sourceType: Int = 0
+    val sourceType: Int = 0,
+    val lastUpdateTime: Long? = 0
+)
+
+//增量上传的专用请求包
+data class PushRequest(
+    val records: List<StockRecord>, // 或者 StockRecordDto，取决于你API定义，你目前用的是 Entity
+    val products: List<ProductDto>  // 顺便带上产品资料
 )
 
 // 扩展函数：将 Entity 转为 DTO
 fun StockRecord.toDto(): StockRecordDto {
     return StockRecordDto(
         sessionId = this.sessionId,
+        uuid = this.uuid,
         di = this.di,
         batchNumber = this.batchNumber,
         expiryDate = this.expiryDate,
@@ -56,12 +66,12 @@ fun StockRecord.toDto(): StockRecordDto {
         actualQuantity = this.actualQuantity,
         location = this.location,
         remarks = this.remarks,
-        sourceType = this.sourceType
+        sourceType = this.sourceType,
+        lastUpdateTime = this.lastUpdateTime
     )
 }
 
 // 在 SyncModels.kt 中添加
-
 fun ProductBase.toDto(): ProductDto {
     return ProductDto(
         di = this.di,
@@ -75,3 +85,4 @@ fun ProductBase.toDto(): ProductDto {
         registrationCert = this.registrationCert ?: ""
     )
 }
+

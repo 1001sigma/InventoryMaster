@@ -395,8 +395,8 @@ fun HomeScreen(
 
                 try {
                     // === 情况 A: 完美二维码 (IP|ID) ===
-                    if (result.contains("|")) {
-                        val parts = result.split("|")
+                    if (result.contains(",")) {
+                        val parts = result.split(",")
                         val ip = parts[0]
                         val id = parts[1].toLong()
 

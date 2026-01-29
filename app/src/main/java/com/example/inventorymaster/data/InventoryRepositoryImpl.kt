@@ -1,10 +1,9 @@
 package com.example.inventorymaster.data
 
+import android.content.SharedPreferences
 import com.example.inventorymaster.data.dao.ProductDao
 import com.example.inventorymaster.data.dao.SessionDao
 import com.example.inventorymaster.data.dao.StockRecordDao
-import com.example.inventorymaster.data.dto.ProductDto
-import com.example.inventorymaster.data.dto.StockRecordDto
 import com.example.inventorymaster.data.dto.SyncData
 import com.example.inventorymaster.data.dto.toDto
 import com.example.inventorymaster.data.entity.InventorySession
@@ -15,11 +14,14 @@ import com.example.inventorymaster.data.model.ConflictAction
 import com.example.inventorymaster.data.model.ProductConflict
 import com.example.inventorymaster.data.network.InventoryApiService
 import kotlinx.coroutines.flow.Flow
+import androidx.core.content.edit
+import com.example.inventorymaster.data.dto.ProductDto
 
 class InventoryRepositoryImpl(
     private val sessionDao: SessionDao,
     private val stockRecordDao: StockRecordDao,
-    private val productDao: ProductDao // [新增] 必须注入 ProductDao
+    private val productDao: ProductDao, // [新增] 必须注入 ProductDao
+    private val prefs: SharedPreferences
 ) : InventoryRepository {
 
     // --- Session ---
@@ -201,19 +203,22 @@ class InventoryRepositoryImpl(
         }
     }
 
+    //IP保存
+    override fun saveServerIp(ip: String) {
+        prefs.edit { putString("server_ip", ip) }
+    }
     // 全量上传
     override suspend fun exportFullSession(ip: String, sessionId: Long): Result<String> {
         return try {
-            // 1. 获取 Session 信息 (核心新增)
-            // 注意：因为 sessionDao.getSessionById 可能返回 Flow 或 Entity，
-            // 建议在 DAO 里加一个 suspend fun getSessionEntityById(id): InventorySession?
-            // 这里假设你能通过某种方式拿到 Entity。
-            // 如果你的 DAO 只有 Flow，可以用 .first()
+            val session = sessionDao.getSessionById(sessionId)
+                ?: return Result.failure(Exception("任务不存在"))
+
             val sessionEntity = sessionDao.getSessionById(sessionId)
                 ?: return Result.failure(Exception("找不到 Session $sessionId"))
 
             val sessionDto = com.example.inventorymaster.data.dto.SessionDto(
                 id = sessionEntity.id,
+                uuid = session.uuid,
                 name = sessionEntity.name,
                 date = sessionEntity.date,
                 status = sessionEntity.status,
@@ -231,9 +236,24 @@ class InventoryRepositoryImpl(
             // 2. 提取并转换产品 (利用 Kotlin 链式调用，自动去重)
             // 逻辑：拿出所有非空产品 -> 根据 DI 去重 -> 转成 DTO
             val productDtoList = combinedList
-                .mapNotNull { it.product } // 过滤掉没有产品资料的记录
-                .distinctBy { it.di }      // 根据 DI 去重 (替代了原来的 map.containsKey 判断)
-                .map { it.toDto() }        // 转成 DTO
+                .map { combined ->
+                    // 如果 combined.product 是 null，说明这是条孤儿记录
+                    // 我们手动创建一个“临时产品”发给服务器
+                    combined.product ?: ProductBase(
+                        di = combined.record.di,
+                        productName = "未录入产品 (上传补全)",
+                        manufacturer = "未知",
+                        source = "upload_auto_fix",
+                        specification = "",    // 补空字符串
+                        model = "",            // 补空字符串
+                        materialCode = "",     // 补空字符串
+                        unit = "",             // 补空字符串
+                        categoryCode = "",     // 补空字符串
+                        registrationCert = ""  // 补空字符串
+                    )
+                }
+                .distinctBy { it.di } // 去重
+                .map { it.toDto() }   // 转 DTO
 
             // 3. 打包 (现在放入 session)
             val syncData = SyncData(
@@ -257,38 +277,71 @@ class InventoryRepositoryImpl(
         }
     }
     //同步上传（增量上传）
-    override suspend fun uploadSessionData(ip: String, sessionId: Long): Result<String> {
+    override suspend fun pushUnsyncedData(sessionId: Long): Result<String> {
         return try {
             // 1. 先去数据库找，有没有 sync_status = 1 的数据
-            val unsyncedRecords = stockRecordDao.getUnsyncedRecords(sessionId)
+            val dirtyRecords = stockRecordDao.getDirtyRecords(sessionId)
+            //结束
 
-            if (unsyncedRecords.isEmpty()) {
+            if (dirtyRecords.isEmpty()) {
                 return Result.success("没有需要同步的数据")
             }
             // 2. (因为 IP 是动态的)
-            // 假设电脑端监听端口是 8080，如果不是请修改InventoryApiService文件
-            val api = InventoryApiService.create(ip)
+            val session = sessionDao.getSessionById(sessionId)
+            if (session == null) {
+                return Result.failure(Exception("找不到对应的任务信息"))
+            }
+            val currentUuid = session.uuid
+
+            // 🔥🔥🔥 核心新增：收集关联的产品资料 🔥🔥🔥
+            // =======================================================
+            // 3.1 提取这次上传涉及的所有 DI
+            val distinctDis = dirtyRecords.map { it.di }.distinct()
+
+            // 3.2 去数据库查这些产品的详情
+            // (注意：ProductDao 需要支持批量查询，如果不支持，可以用循环查)
+            val relatedProducts = mutableListOf<ProductDto>()
+            for (di in distinctDis) {
+                val product = productDao.getProductByDi(di)
+                if (product != null) {
+                    relatedProducts.add(product.toDto()) // 转成 DTO
+                }
+            }
+
+            // 3.3 打包
+            val pushPackage = com.example.inventorymaster.data.dto.PushRequest(
+                records = dirtyRecords,
+                products = relatedProducts
+            )
             // 3. 发送数据
-            val response = api.pushData(unsyncedRecords)
+            val api = InventoryApiService.create(prefs.getString("server_ip", "") ?: "")
+            val response = api.pushData(
+                sessionUuid = currentUuid,
+                data = pushPackage
+            )
 
             // 4. 处理结果
             if (response.isSuccessful) {
                 // ✅ 电脑说收到了
                 // 提取上传成功的 ID 列表
-                val successIds = unsyncedRecords.map { it.id }
+                val successIds = dirtyRecords.map { it.id }
 
                 // ⚠️ 关键动作：把本地状态改为“已同步 (0)”，防止下次重复传
-                stockRecordDao.markRecordsAsSynced(successIds)
+                stockRecordDao.markAsSynced(successIds)
 
                 Result.success("成功同步 ${successIds.size} 条记录")
             } else {
                 // ❌ 电脑报错
+                val errorBody = response.errorBody()?.string() ?: "未知错误"
+                android.util.Log.e("SYNC_ERROR", "上传失败 code=${response.code()}, body=$errorBody")
+                //调试
                 Result.failure(Exception("服务器错误: ${response.code()} ${response.message()}"))
             }
 
         } catch (e: Exception) {
             e.printStackTrace()
             // ❌ 网络不通
+            android.util.Log.e("SYNC_ERROR", "连接异常", e)
             Result.failure(Exception("连接失败: ${e.message}"))
         }
     }
@@ -308,15 +361,34 @@ class InventoryRepositoryImpl(
             // 1. 保存/更新 Session (核心修复)
             // 直接使用服务器传回来的完美数据
             val serverSession = data.session
-            val sessionEntity = InventorySession(
-                id = serverSession.id,
-                name = serverSession.name,
-                date = serverSession.date,
-                status = serverSession.status,
-                isLocked = serverSession.isLocked
-            )
-            // 插入数据库 (如果 ID 存在则替换)
-            sessionDao.insertSession(sessionEntity)
+            val localSession = sessionDao.getSessionByUuid(serverSession.uuid)
+
+            val finalLocalId: Long
+
+            if (localSession != null) {
+                // A. 熟人：本地已有，执行更新
+                finalLocalId = localSession.id // 👈 只要这一行，保持本地 ID 不变！
+
+                val sessionToUpdate = localSession.copy(
+                    name = serverSession.name,
+                    date = serverSession.date,
+                    status = serverSession.status,
+                    isLocked = serverSession.isLocked
+                )
+                sessionDao.updateSession(sessionToUpdate)
+            } else {
+                // B. 生人：本地没有，执行新增
+                val sessionToInsert = InventorySession(
+                    id = 0, // 👈 设为 0，让 Room 自动生成不冲突的新 ID
+                    uuid = serverSession.uuid,
+                    name = serverSession.name,
+                    date = serverSession.date,
+                    status = serverSession.status,
+                    isLocked = serverSession.isLocked
+                )
+                finalLocalId = sessionDao.insertSession(sessionToInsert)
+            }
+
 
 
             // 2. 保存产品 (保持不变)
@@ -332,17 +404,18 @@ class InventoryRepositoryImpl(
             }
 
             // 3. 保存记录 (保持不变：先删后插)
-            stockRecordDao.deleteRecordsBySession(sessionId)
+            stockRecordDao.deleteRecordsBySession(finalLocalId)
 
             val newRecords = data.records.map { rDto ->
                 StockRecord(
-                    sessionId = rDto.sessionId,
+                    sessionId = finalLocalId,
+                    uuid = rDto.uuid ?: java.util.UUID.randomUUID().toString(),
                     di = rDto.di,
                     batchNumber = rDto.batchNumber,
                     expiryDate = rDto.expiryDate,
                     quantity = rDto.quantity,
                     actualQuantity = rDto.actualQuantity,
-                    location = rDto.location,
+                    location = rDto.location ?:"",
                     remarks = rDto.remarks,
                     sourceType = 2
                 )
@@ -359,29 +432,74 @@ class InventoryRepositoryImpl(
         }
     }
 
-    // 🔥 [核心实现] 下载/同步数据
-    override suspend fun downloadFromPC(ip: String, sessionId: Long): Result<String> {
+    // [核心实现] 下载/同步数据
+    override suspend fun pullNewData(sessionId: Long): Result<String> {
         return try {
+            val ip = prefs.getString("server_ip", "") ?: return Result.failure(Exception("未设置IP"))
             val api = InventoryApiService.create(ip)
-
+            val session = sessionDao.getSessionById(sessionId)
+                ?: return Result.failure(Exception("任务不存在"))
+            val currentUuid = session.uuid
+            val lastSyncTime = prefs.getLong("LAST_SYNC_TIME_$sessionId", 0L)
             // 2. 发起请求
-            val response = api.pullData(sessionId)
+            val response = api.pullData(currentUuid,lastSyncTime)
 
             if (response.isSuccessful) {
-                val remoteRecords = response.body()
-                if (remoteRecords.isNullOrEmpty()) {
-                    return Result.success("服务端没有新数据")
+                val remoteRecords = response.body()?: emptyList()
+                if (remoteRecords.isNotEmpty()) {
+                    // 3. 🛡️ 防死循环的核心操作！
+                    // 强制把下载下来的数据的 syncStatus 设为 0
+                    val processedCount = remoteRecords.size
+                    for (remoteRecord in remoteRecords) {
+                        // 1. 拿着 UUID 去本地问：你是新来的吗？
+                        val localRecord = stockRecordDao.getRecordByUuid(remoteRecord.uuid)
+
+                        if (localRecord != null) {
+                            // === 情况 A: 本地已存在 (这是更新) ===
+                            // 关键点：我们要复用本地的 ID！否则 Room 会以为是新数据
+                            val recordToUpdate = remoteRecord.copy(
+                                id = localRecord.id, // 👈 偷梁换柱！把本地 ID 赋给它
+                                sessionId = sessionId, // 确保 SessionID 正确
+                                syncStatus = 0, // 标记为干净数据
+
+                                // ⚠️ 注意：这里要决定是否覆盖本地的修改
+                                // 如果你希望服务器永远覆盖本地，就直接用 remoteRecord 的值
+                                // 如果要做冲突检测 (比如本地 syncStatus=1)，这里可以加 if 判断
+                            )
+                            stockRecordDao.insertRecord(recordToUpdate)
+
+                        } else {
+                            // === 情况 B: 本地不存在 (这是新增) ===
+                            val recordToInsert = remoteRecord.copy(
+                                id = 0, // 👈 ID 设为 0，让 Room 自动生成新 ID
+                                sessionId = sessionId,
+                                syncStatus = 0
+                            )
+                            stockRecordDao.updateRecord(recordToInsert)
+                        }
+                    }
+                    // 更新时间戳
+                    // 1. 找出这批数据里，最新的那个时间戳 (这是服务器的时间)
+                    val maxServerTime = remoteRecords.maxOfOrNull { it.lastUpdateTime ?: 0L } ?: 0L
+
+                    // 2. 只有当服务端时间有效 (>0) 时才更新本地标记
+                    if (maxServerTime > 0) {
+                        // 逻辑：下次从这个时间点之后开始查
+                        // 为了稳妥，取 (当前记录的旧时间) 和 (新时间) 的较大值，防止时间倒流
+                        val currentSavedTime = prefs.getLong("LAST_SYNC_TIME_$sessionId", 0L)
+
+                        if (maxServerTime > currentSavedTime) {
+                            prefs.edit().putLong("LAST_SYNC_TIME_$sessionId", maxServerTime).apply()
+                            android.util.Log.d("SYNC", "同步锚点已更新为服务器时间: $maxServerTime")
+                        }
+                    }
+
+                    // ❌ 删掉这行旧代码：不要用本地时间！
+                    // prefs.edit().putLong("LAST_SYNC_TIME_$sessionId", System.currentTimeMillis()).apply()
+
+                    return Result.success("更新了 $processedCount 条数据")
                 }
-
-                // 3. 处理下载的数据
-                // 这里有一个关键点：电脑传回来的数据，sync_status 应该是 0 (已同步)
-                // 但为了保险，我们可以强制设为 0，防止手机拿到后又以为是自己改的，再传回去形成死循环
-                val cleanRecords = remoteRecords.map { it.copy(syncStatus = 0) }
-
-                // 4. 保存进数据库 (覆盖更新)
-                stockRecordDao.insertRecords(cleanRecords)
-
-                Result.success("成功同步 ${cleanRecords.size} 条数据")
+                return Result.success("已是最新")
             } else {
                 Result.failure(Exception("下载失败: ${response.code()}"))
             }

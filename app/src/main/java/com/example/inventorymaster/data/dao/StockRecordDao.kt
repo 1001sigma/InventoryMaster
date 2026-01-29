@@ -17,7 +17,7 @@ interface StockRecordDao {
     // --- 写入操作 (只负责存 ID 和 数量) ---
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertRecord(record: StockRecord)
+    suspend fun insertRecord(record: StockRecord): Long
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertRecords(records: List<StockRecord>)
@@ -30,6 +30,12 @@ interface StockRecordDao {
 
     @Query("DELETE FROM stock_records WHERE sessionId = :sessionId")
     suspend fun deleteRecordsBySession(sessionId: Long)
+
+    // 🔥 新增：根据 UUID 查找本地记录
+    // 如果找到了，返回的 StockRecord 里就包含本地的 ID
+    @Query("SELECT * FROM stock_records WHERE uuid = :uuid LIMIT 1")
+    suspend fun getRecordByUuid(uuid: String): StockRecord?
+
 
     // --- 事务操作 ---
 
@@ -123,11 +129,20 @@ interface StockRecordDao {
     // 🔥 [新增] 1. 找出所有“待上传”的记录
     // 注意：这里用的是 sessionId (驼峰命名)，对应你表里的字段
     @Query("SELECT * FROM stock_records WHERE sessionId = :sessionId AND sync_status = 1")
-    suspend fun getUnsyncedRecords(sessionId: Long): List<StockRecord>
+    suspend fun getDirtyRecords(sessionId: Long): List<StockRecord>
 
     // 🔥 [新增] 2. 批量更新同步状态 (上传成功后调用)
     // 把指定 ID 的记录标记为“已同步 (0)”
     @Query("UPDATE stock_records SET sync_status = 0 WHERE id IN (:ids)")
-    suspend fun markRecordsAsSynced(ids: List<Long>)
+    suspend fun markAsSynced(ids: List<Long>)
+
+    // 3. 保存从服务器下载的数据 (防止死循环的关键！)
+    // 逻辑：保存数据的同时，强制把 syncStatus 设为 0
+    @Transaction
+    suspend fun saveRemoteRecords(records: List<StockRecord>) {
+        // 这一步在内存中操作：先把所有记录标记为“干净”，再存入数据库
+        val cleanRecords = records.map { it.copy(syncStatus = 0) }
+        insertRecords(cleanRecords)
+    }
 
 }

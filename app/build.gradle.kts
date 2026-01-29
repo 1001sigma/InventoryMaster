@@ -66,6 +66,8 @@ dependencies {
     // --- JSON 解析 Gson ---
     implementation("com.google.code.gson:gson:2.10")
 
+    implementation(platform("androidx.compose:compose-bom:2024.02.01"))
+
     // --- 后面会用到的 ViewModel 和 Navigation ---
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.6.2")
     implementation("androidx.navigation:navigation-compose:2.7.5")
@@ -81,9 +83,9 @@ dependencies {
     // Google ML Kit 条码扫描
     implementation("com.google.mlkit:barcode-scanning:17.2.0")
     // 图标扩展 (如果还没加的话)
-    implementation("androidx.compose.material:material-icons-extended:1.5.4")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
     implementation("androidx.compose.material:material-icons-extended:1.5.4") // 版本号跟随你的 compose 版本
+    implementation("androidx.compose.material3:material3")
     //网络请求库 Retrofit + Gson 转换器
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
@@ -98,4 +100,6 @@ dependencies {
 
     // 👇 [新增] 配合相册选图，我们需要加载图片的库 (如果你还没有 coil 或 glide)
     implementation("io.coil-kt:coil-compose:2.4.0")
+    // Jieba 分词 (Java 版)
+    implementation ("com.huaban:jieba-analysis:1.0.2")
 }

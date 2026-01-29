@@ -23,6 +23,10 @@ interface SessionDao {
     @Query("SELECT * FROM inventory_sessions WHERE id = :id")
     suspend fun getSessionById(id: Long): InventorySession?
 
+    // SessionDao.kt
+    @Query("SELECT * FROM inventory_sessions WHERE uuid = :uuid LIMIT 1")
+    suspend fun getSessionByUuid(uuid: String): InventorySession?
+
     // 更新任务状态 (例如锁定)
     @Update
     suspend fun updateSession(session: InventorySession)

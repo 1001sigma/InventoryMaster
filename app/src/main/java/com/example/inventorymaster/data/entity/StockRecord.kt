@@ -5,6 +5,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlin.uuid.Uuid
 
 /**
  * L2 库存实物记录表 (账本表)
@@ -31,11 +32,16 @@ import androidx.room.PrimaryKey
         )
     ],
     // 联合索引：加速查询，同时防止同一位置重复录入完全一样的数据
-    indices = [Index(value = ["sessionId", "di", "batchNumber", "location"], unique = false),Index(value = ["di"])]
+    indices = [
+        Index(value = ["sessionId", "di", "batchNumber", "location"], unique = false),
+        Index(value = ["di"]),
+        Index(value = ["uuid"], unique = true)],
+
 )
 data class StockRecord(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
+    val uuid: String = java.util.UUID.randomUUID().toString(),
 
     val sessionId: Long,      // 所属盘点任务
     val di: String,           // 关联产品库
@@ -49,7 +55,7 @@ data class StockRecord(
 
     val actualQuantity: Double? = null,     //实际数量（初始为null）
     val remarks: String? = null, // 备注 (存“已查验”等状态)
-    val sourceType: Int = 0,      // 0=手动, 1=Excel导入, 2=扫码
+    val sourceType: Int = 0,    // 0=手动, 1=Excel导入, 2=扫码
 
     // 1. 操作人 (必填，用于区分是谁改的)
     @ColumnInfo(name = "operator")
