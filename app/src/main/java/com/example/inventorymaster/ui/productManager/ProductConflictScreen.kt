@@ -1,4 +1,4 @@
-package com.example.inventorymaster.ui
+package com.example.inventorymaster.ui.productManager
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -42,7 +42,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.example.inventorymaster.data.model.ConflictAction
 import com.example.inventorymaster.data.model.ProductConflict
-
+//产品字典同步
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProductConflictScreen(

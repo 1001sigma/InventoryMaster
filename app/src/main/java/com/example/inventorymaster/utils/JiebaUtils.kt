@@ -17,6 +17,7 @@ object JiebaUtils {
     // 懒加载单例
     private val segmenter by lazy { JiebaSegmenter() }
     private var isDictLoaded = false
+    private val SIMPLE_SPLIT_REGEX = Regex("""[\s,，.。;；:：!！?？、|()\[\]{}<>"'`~]+""")
 
     /**
      * 初始化：将 assets 中的字典拷贝出来并加载
@@ -58,17 +59,29 @@ object JiebaUtils {
     /**
      * 分词方法
      */
-    suspend fun cut(text: String): List<String> {
+    suspend fun cut(text: String,useSimpleMode: Boolean = false): List<String> {
         return withContext(Dispatchers.Default) {
-            try {
-                // 确保字典加载后再分词（如果还没加载完，会用默认字典，也无伤大雅）
-                val tokens = segmenter.process(text, JiebaSegmenter.SegMode.SEARCH)
+            // === 分支 1：简单模式 (正则切分) ===
+            if (useSimpleMode) {
+                // 1. split(REGEX): 根据上面定义的符号列表进行切割。
+                //    例如 "LOT: 12345" 会被切成 ["LOT", "", "12345"] (中间的空字符串是因为冒号后面有个空格)
+                // 2. filter { it.isNotBlank() }: 过滤掉那些切出来的空字符串。
+                // 3. map { it.trim() }: 把切出来的每个词两头的隐形空格再洗一遍，确保干净。
+                return@withContext text.split(SIMPLE_SPLIT_REGEX)
+                    .filter { it.isNotBlank() } // 只要有内容的
+                    .map { it.trim() }          // 去掉首尾残留空格
+            }
 
+            // === 分支 2：专业模式 (Jieba 分词) ===
+            try {
+                // 只有这里才会用到 segmenter，没加载字典也没事，会用默认的
+                val tokens = segmenter.process(text, JiebaSegmenter.SegMode.SEARCH)
                 tokens.map { it.word.trim() }
-                    .filter { it.length > 1 } // 过滤掉单字和标点，看你需求
+                    .filter { it.length > 1 } // 过滤掉单字
                     .distinct() // 去重
             } catch (e: Exception) {
                 e.printStackTrace()
+                // 如果 Jieba 崩了，自动降级用空格切分，保证 APP 不闪退
                 text.split(" ").filter { it.isNotBlank() }
             }
         }

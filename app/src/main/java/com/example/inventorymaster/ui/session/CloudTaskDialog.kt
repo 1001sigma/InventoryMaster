@@ -1,4 +1,4 @@
-package com.example.inventorymaster.ui
+package com.example.inventorymaster.ui.session
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement

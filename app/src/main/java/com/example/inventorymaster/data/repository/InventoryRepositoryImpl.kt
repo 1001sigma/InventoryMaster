@@ -1,9 +1,14 @@
-package com.example.inventorymaster.data
+package com.example.inventorymaster.data.repository
 
 import android.content.SharedPreferences
+import android.util.Log
+import androidx.core.content.edit
 import com.example.inventorymaster.data.dao.ProductDao
 import com.example.inventorymaster.data.dao.SessionDao
 import com.example.inventorymaster.data.dao.StockRecordDao
+import com.example.inventorymaster.data.dto.ProductDto
+import com.example.inventorymaster.data.dto.PushRequest
+import com.example.inventorymaster.data.dto.SessionDto
 import com.example.inventorymaster.data.dto.SyncData
 import com.example.inventorymaster.data.dto.toDto
 import com.example.inventorymaster.data.entity.InventorySession
@@ -14,8 +19,7 @@ import com.example.inventorymaster.data.model.ConflictAction
 import com.example.inventorymaster.data.model.ProductConflict
 import com.example.inventorymaster.data.network.InventoryApiService
 import kotlinx.coroutines.flow.Flow
-import androidx.core.content.edit
-import com.example.inventorymaster.data.dto.ProductDto
+import java.util.UUID
 
 class InventoryRepositoryImpl(
     private val sessionDao: SessionDao,
@@ -26,7 +30,12 @@ class InventoryRepositoryImpl(
 
     // --- Session ---
     override fun getAllSessions() = sessionDao.getAllSessions()
-    override suspend fun createSession(name: String) { sessionDao.insertSession(InventorySession(name = name, date = System.currentTimeMillis()))}
+    override suspend fun createSession(name: String) { sessionDao.insertSession(
+        InventorySession(
+            name = name,
+            date = System.currentTimeMillis()
+        )
+    )}
     override suspend fun updateSessionStatus(sessionId: Long, status: Int) = sessionDao.updateStatus(sessionId, status)
     override suspend fun deleteSession(session: InventorySession) = sessionDao.deleteSession(session)
 
@@ -108,7 +117,14 @@ class InventoryRepositoryImpl(
 
                 if (isDiff) {
                     // 默认策略：让用户自己选，或者你可以默认设为 IGNORE
-                    conflictList.add(ProductConflict(newProd.di, oldProd, newProd, ConflictAction.PENDING))
+                    conflictList.add(
+                        ProductConflict(
+                            newProd.di,
+                            oldProd,
+                            newProd,
+                            ConflictAction.PENDING
+                        )
+                    )
                 }
             }
         }
@@ -127,11 +143,11 @@ class InventoryRepositoryImpl(
             if (existingProd != null) {
                 // 数据库已有 -> 走 Update (防止外键冲突闪退)
                 productDao.updateProduct(safeProd)
-                android.util.Log.d("DEBUG_SAVE", "更新产品: $cleanDi")
+                Log.d("DEBUG_SAVE", "更新产品: $cleanDi")
             } else {
                 // 数据库没有 -> 走 Insert
                 productDao.insertProduct(safeProd)
-                android.util.Log.d("DEBUG_SAVE", "新增产品: $cleanDi")
+                Log.d("DEBUG_SAVE", "新增产品: $cleanDi")
             }
         }
 
@@ -151,7 +167,7 @@ class InventoryRepositoryImpl(
             if (fatherProduct == null) {
                 // 😱 发现孤儿！Excel 里有这条记录，但产品库里竟然没这个 DI。
                 // 这会导致外键崩溃。所以，我们立刻给它造一个“临时爸爸”。
-                android.util.Log.w("DEBUG_SAVE", "⚠️ 发现缺失产品信息的记录: $cleanDi，正在自动补全...")
+                Log.w("DEBUG_SAVE", "⚠️ 发现缺失产品信息的记录: $cleanDi，正在自动补全...")
 
                 val dummyProduct = ProductBase(
                     di = cleanDi,
@@ -189,7 +205,7 @@ class InventoryRepositoryImpl(
                     // ⚠️ 绝对不碰 actualQuantity
                 )
                 stockRecordDao.updateRecord(recordToUpdate)
-                android.util.Log.d("DEBUG_STOCK", "覆盖更新记录: $cleanDi")
+                Log.d("DEBUG_STOCK", "覆盖更新记录: $cleanDi")
             } else {
                 // === 情况 B: 纯新记录 -> 插入 ===
                 val newRecord = record.copy(
@@ -198,11 +214,10 @@ class InventoryRepositoryImpl(
                     location = cleanLoc
                 )
                 stockRecordDao.insertRecord(newRecord)
-                android.util.Log.d("DEBUG_STOCK", "插入新记录: $cleanDi")
+                Log.d("DEBUG_STOCK", "插入新记录: $cleanDi")
             }
         }
     }
-
     //IP保存
     override fun saveServerIp(ip: String) {
         prefs.edit { putString("server_ip", ip) }
@@ -216,7 +231,7 @@ class InventoryRepositoryImpl(
             val sessionEntity = sessionDao.getSessionById(sessionId)
                 ?: return Result.failure(Exception("找不到 Session $sessionId"))
 
-            val sessionDto = com.example.inventorymaster.data.dto.SessionDto(
+            val sessionDto = SessionDto(
                 id = sessionEntity.id,
                 uuid = session.uuid,
                 name = sessionEntity.name,
@@ -263,7 +278,7 @@ class InventoryRepositoryImpl(
             )
 
             // 4. 发送
-            val api = InventoryApiService.create(ip)
+            val api = InventoryApiService.Companion.create(ip)
             val response = api.uploadData(syncData)
 
             if (response.isSuccessful) {
@@ -309,12 +324,12 @@ class InventoryRepositoryImpl(
             }
 
             // 3.3 打包
-            val pushPackage = com.example.inventorymaster.data.dto.PushRequest(
+            val pushPackage = PushRequest(
                 records = dirtyRecords,
                 products = relatedProducts
             )
             // 3. 发送数据
-            val api = InventoryApiService.create(prefs.getString("server_ip", "") ?: "")
+            val api = InventoryApiService.Companion.create(prefs.getString("server_ip", "") ?: "")
             val response = api.pushData(
                 sessionUuid = currentUuid,
                 data = pushPackage
@@ -325,7 +340,6 @@ class InventoryRepositoryImpl(
                 // ✅ 电脑说收到了
                 // 提取上传成功的 ID 列表
                 val successIds = dirtyRecords.map { it.id }
-
                 // ⚠️ 关键动作：把本地状态改为“已同步 (0)”，防止下次重复传
                 stockRecordDao.markAsSynced(successIds)
 
@@ -333,7 +347,7 @@ class InventoryRepositoryImpl(
             } else {
                 // ❌ 电脑报错
                 val errorBody = response.errorBody()?.string() ?: "未知错误"
-                android.util.Log.e("SYNC_ERROR", "上传失败 code=${response.code()}, body=$errorBody")
+                Log.e("SYNC_ERROR", "上传失败 code=${response.code()}, body=$errorBody")
                 //调试
                 Result.failure(Exception("服务器错误: ${response.code()} ${response.message()}"))
             }
@@ -341,7 +355,7 @@ class InventoryRepositoryImpl(
         } catch (e: Exception) {
             e.printStackTrace()
             // ❌ 网络不通
-            android.util.Log.e("SYNC_ERROR", "连接异常", e)
+            Log.e("SYNC_ERROR", "连接异常", e)
             Result.failure(Exception("连接失败: ${e.message}"))
         }
     }
@@ -349,7 +363,7 @@ class InventoryRepositoryImpl(
     //全量下载
     override suspend fun exportdownloadFromPC(ip: String, sessionId: Long): Result<String> {
         return try {
-            val api = InventoryApiService.create(ip)
+            val api = InventoryApiService.Companion.create(ip)
             val response = api.downloadData(sessionId)
 
             if (!response.isSuccessful || response.body() == null) {
@@ -394,12 +408,19 @@ class InventoryRepositoryImpl(
             // 2. 保存产品 (保持不变)
             for (pDto in data.products) {
                 if (productDao.getProductByDi(pDto.di) == null) {
-                    productDao.insertProduct(ProductBase(
-                        di = pDto.di, productName = pDto.productName,
-                        specification = pDto.specification?:"", model = pDto.model?:"",
-                        manufacturer = pDto.manufacturer?:"", materialCode = pDto.materialCode?:"",
-                        unit = pDto.unit?:"", categoryCode = pDto.categoryCode?:"", registrationCert = pDto.registrationCert?:""
-                    ))
+                    productDao.insertProduct(
+                        ProductBase(
+                            di = pDto.di,
+                            productName = pDto.productName,
+                            specification = pDto.specification ?: "",
+                            model = pDto.model ?: "",
+                            manufacturer = pDto.manufacturer ?: "",
+                            materialCode = pDto.materialCode ?: "",
+                            unit = pDto.unit ?: "",
+                            categoryCode = pDto.categoryCode ?: "",
+                            registrationCert = pDto.registrationCert ?: ""
+                        )
+                    )
                 }
             }
 
@@ -409,13 +430,13 @@ class InventoryRepositoryImpl(
             val newRecords = data.records.map { rDto ->
                 StockRecord(
                     sessionId = finalLocalId,
-                    uuid = rDto.uuid ?: java.util.UUID.randomUUID().toString(),
+                    uuid = rDto.uuid ?: UUID.randomUUID().toString(),
                     di = rDto.di,
                     batchNumber = rDto.batchNumber,
                     expiryDate = rDto.expiryDate,
                     quantity = rDto.quantity,
                     actualQuantity = rDto.actualQuantity,
-                    location = rDto.location ?:"",
+                    location = rDto.location ?: "",
                     remarks = rDto.remarks,
                     sourceType = 2
                 )
@@ -436,7 +457,7 @@ class InventoryRepositoryImpl(
     override suspend fun pullNewData(sessionId: Long): Result<String> {
         return try {
             val ip = prefs.getString("server_ip", "") ?: return Result.failure(Exception("未设置IP"))
-            val api = InventoryApiService.create(ip)
+            val api = InventoryApiService.Companion.create(ip)
             val session = sessionDao.getSessionById(sessionId)
                 ?: return Result.failure(Exception("任务不存在"))
             val currentUuid = session.uuid
@@ -490,7 +511,7 @@ class InventoryRepositoryImpl(
 
                         if (maxServerTime > currentSavedTime) {
                             prefs.edit().putLong("LAST_SYNC_TIME_$sessionId", maxServerTime).apply()
-                            android.util.Log.d("SYNC", "同步锚点已更新为服务器时间: $maxServerTime")
+                            Log.d("SYNC", "同步锚点已更新为服务器时间: $maxServerTime")
                         }
                     }
 
@@ -510,9 +531,9 @@ class InventoryRepositoryImpl(
     }
 
     //实现拉取列表
-    override suspend fun fetchCloudSessions(ip: String): Result<List<com.example.inventorymaster.data.dto.SessionDto>> {
+    override suspend fun fetchCloudSessions(ip: String): Result<List<SessionDto>> {
         return try {
-            val api = InventoryApiService.create(ip)
+            val api = InventoryApiService.Companion.create(ip)
             val response = api.getSessionList()
 
             if (response.isSuccessful && response.body() != null) {

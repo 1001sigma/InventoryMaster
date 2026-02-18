@@ -28,5 +28,5 @@ data class ProductBase(
 
     // --- 数据维护字段 ---
     val lastSyncTime: Long = 0,     // 上次同步/更新时间
-    val source: String = "local"    // 数据来源: "local"(手动/Excel), "nmpa"(国家库), "scan"(扫码)
+    val source: String = "local"    // 数据来源: "local"(手动/Excel导入), "nmpa"(国家库), "json"(json导入)
 )

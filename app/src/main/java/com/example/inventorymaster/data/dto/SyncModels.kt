@@ -71,7 +71,6 @@ fun StockRecord.toDto(): StockRecordDto {
     )
 }
 
-// 在 SyncModels.kt 中添加
 fun ProductBase.toDto(): ProductDto {
     return ProductDto(
         di = this.di,

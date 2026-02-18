@@ -12,7 +12,7 @@ android {
     defaultConfig {
         applicationId = "com.example.inventorymaster"
         minSdk = 29
-        targetSdk = 35
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
 
@@ -96,10 +96,12 @@ dependencies {
     implementation("com.google.zxing:core:3.5.2")
     // 👇 [新增] ML Kit 文字识别 (通用拉丁字母版，支持英文/数字)
     // 如果你需要识别中文，请改用: 'com.google.mlkit:text-recognition-chinese:16.0.0'
-    implementation("com.google.mlkit:text-recognition-chinese:16.0.0")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     // 👇 [新增] 配合相册选图，我们需要加载图片的库 (如果你还没有 coil 或 glide)
     implementation("io.coil-kt:coil-compose:2.4.0")
     // Jieba 分词 (Java 版)
     implementation ("com.huaban:jieba-analysis:1.0.2")
+    // DataStore Preferences
+    implementation("androidx.datastore:datastore-preferences:1.2.0")
 }

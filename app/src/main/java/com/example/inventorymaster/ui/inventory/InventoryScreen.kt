@@ -1,6 +1,7 @@
-package com.example.inventorymaster.ui
+package com.example.inventorymaster.ui.inventory
 
 // --- 请确保包含以下所有 import ---
+import android.Manifest
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -13,13 +14,16 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,10 +32,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudUpload
-import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -64,23 +68,30 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
-import com.example.inventorymaster.utils.ExcelUtils
+import com.example.inventorymaster.ui.ScanScreen
+import com.example.inventorymaster.ui.productManager.ProductConflictScreen
+import com.example.inventorymaster.ui.sync.SyncDialog
 import com.example.inventorymaster.viewmodel.InventoryViewModel
+import com.example.inventorymaster.viewmodel.SessionViewModel
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
-import java.util.*
+import java.time.LocalDate
+import java.util.Date
+import java.util.Locale
 
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -88,22 +99,25 @@ import java.util.*
 fun InventoryScreen(
     sessionId: Long,
     onBackClick: () -> Unit,
-    viewModel: InventoryViewModel = viewModel(factory = InventoryViewModel.Factory)
+    sessionViewModel: SessionViewModel,
+    inventoryViewModel: InventoryViewModel,
 ) {
     // 1. 监听数据状态
-    val uiState by viewModel.uiState.collectAsState()
+    val inventoryStateUI by inventoryViewModel.uiState.collectAsState()
+    val sessionStateUI by sessionViewModel.uiState.collectAsState()
+    val uiState by inventoryViewModel.uiState.collectAsState()
     // 2. 本地 UI 状态
     var searchQuery by remember { mutableStateOf("") }
     // 默认为盘库模式 (true=盘库, false=查询)
-    LaunchedEffect(uiState.searchQuery) {
-        if (searchQuery != uiState.searchQuery) {
-            searchQuery = uiState.searchQuery
+    LaunchedEffect(inventoryStateUI.searchQuery) {
+        if (searchQuery != inventoryStateUI.searchQuery) {
+            searchQuery = inventoryStateUI.searchQuery
         }
     }
     var showScanScreen by remember { mutableStateOf(false) }
     var active by remember { mutableStateOf(false) }
 
-    val currentSession = uiState.sessions.find { it.id == sessionId }
+    val currentSession = sessionStateUI.sessions.find { it.id == sessionId }
     val sessionStatus = currentSession?.status ?: 0 // 0=进行中
     val isReadOnly = sessionStatus > 0
     var isInventoryMode by remember (sessionStatus) { mutableStateOf(!isReadOnly) }
@@ -128,12 +142,12 @@ fun InventoryScreen(
     val scope = rememberCoroutineScope()
 
     // 1. 监听生命周期：进页面自动同步 / 切回来自动同步
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 // 每次回到页面，自动静默拉取一次最新数据
-                viewModel.refreshData(sessionId)
+                inventoryViewModel.refreshData(sessionId)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -141,7 +155,7 @@ fun InventoryScreen(
     }
 
     // 2. 监听 ViewModel 的同步状态 (用于控制下拉刷新的转圈圈停止)
-    val isSyncing by viewModel.isSyncing.collectAsState()
+    val isSyncing by inventoryViewModel.isSyncing.collectAsState()
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -157,32 +171,17 @@ fun InventoryScreen(
     }
     val onScanClick: () -> Unit = {
         // 请求权限
-        cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
-
-
 
     // 定义文件选择器
     val excelLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         uri?.let {
-            // 用户选中了文件，开始解析并导入
-            scope.launch {
-                // 1. 调用刚才写的 ExcelUtils 解析
-                // 注意：这里是在主线程调用的，如果文件很大可能会卡。
-                // 更好的做法是把 parseExcel 放到 IO 线程，或者在 ViewModel 里做。
-                // 为了代码简单，我们暂时放在这里，后面我教你移到 ViewModel。
-                try {
-                    val result = ExcelUtils.parseExcel(context, it, sessionId)
-
-                    // 2. 拿到数据，传给 ViewModel 保存
-                    viewModel.analyzeExcelImport(result.products, result.records)
-
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
+            // UI 只负责：拿到 Uri -> 丢给 ViewModel
+            inventoryViewModel.importExcelFile(context,it,sessionId)
+            Toast.makeText(context, "正在后台导入...", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -190,33 +189,19 @@ fun InventoryScreen(
         contract = ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     ) { uri: Uri? ->
         uri?.let {
-            scope.launch {
-                try {
-                    // 1. 找 ViewModel 要数据
-                    val data = viewModel.getExportDataForExcel(sessionId)
-
-                    // 2. 打开文件流并写入
-                    context.contentResolver.openOutputStream(it)?.use { outputStream ->
-                        ExcelUtils.exportExcel(outputStream, data)
-                    }
-
-                    // 3. 提示成功 (这里简单打印，你可以弹个 Toast)
-                    println("导出成功！路径: $it")
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
+            inventoryViewModel.exportExcelFile(context, it, sessionId)
+            Toast.makeText(context, "正在后台导出...", Toast.LENGTH_SHORT).show()
         }
     }
 
     // [新增] 冲突弹窗控制
-    if (uiState.conflictList.isNotEmpty()) {
+    if (inventoryStateUI.conflictList.isNotEmpty()) {
         ProductConflictScreen(
-            conflicts = uiState.conflictList,
-            onToggle = { viewModel.toggleConflictAction(it) },
-            onSelectAll = { viewModel.setAllConflictsAction(it) },
-            onConfirm = { viewModel.confirmConflictResolution() },
-            onCancel = { viewModel.cancelImport() }
+            conflicts = inventoryStateUI.conflictList,
+            onToggle = { inventoryViewModel.toggleConflictAction(it) },
+            onSelectAll = { inventoryViewModel.setAllConflictsAction(it) },
+            onConfirm = { inventoryViewModel.confirmConflictResolution() },
+            onCancel = { inventoryViewModel.cancelImport() }
         )
         // 这一句 return 非常重要，确保背景内容不显示，且 BackHandler 生效
         return
@@ -228,10 +213,10 @@ fun InventoryScreen(
     // 👇 控制弹窗显示的开关
     var showUploadDialog by remember { mutableStateOf(false) }
     // 👇 监听消息：如果 ViewModel 发消息了，就弹 Toast
-    LaunchedEffect(uiState.userMessage) {
-        uiState.userMessage?.let { message ->
+    LaunchedEffect(inventoryStateUI.userMessage) {
+        inventoryStateUI.userMessage?.let { message ->
             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-            viewModel.clearUserMessage() // 弹完就清空
+            sessionViewModel.clearUserMessage() // 弹完就清空
             showUploadDialog = false     // 关闭弹窗
         }
     }
@@ -258,59 +243,58 @@ fun InventoryScreen(
                     },
                     // [新增 actions]
                     actions = {
-                        // 按钮 1: 测试增量上传
-                        Button(onClick = {
-                            viewModel.triggerPush(uiState.currentSessionId!!)
-                        }) {
-                            Text("测上传(Push)")
-                        }
-
-                        // 按钮 2: 测试增量下载
-                        Button(onClick = {
-                            viewModel.refreshData(uiState.currentSessionId!!)
-                        }) {
-                            Text("测下载(Pull)")
-                        }
-                        // 显示同步结果提示
-                        uiState.userMessage?.let {
-                            Text(
-                                text = "状态: $it",
-                                color = Color.Red,
-                                modifier = Modifier.padding(8.dp),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        // 🔥🔥🔥【临时测试区】结束 🔥🔥🔥
-                        // 👇 [新增] 上传按钮
-                        IconButton(onClick = { showSyncDialog = true }) {
-                            // 这里换个图标，比如 Icons.Default.Sync (如果找不到就用 Cloud)
-                            Icon(Icons.Default.CloudUpload, contentDescription = "同步数据")
-                        }
-
+                        //region 按钮 1: 测试增量上传
+//                        Button(onClick = {
+//                            inventoryViewModel.triggerPush(inventoryStateUI.currentSessionId!!)
+//                        }) {
+//                            Text("测上传(Push)")
+//                        }
+//
+//                        // 按钮 2: 测试增量下载
+//                        Button(onClick = {
+//                            inventoryViewModel.refreshData(inventoryStateUI.currentSessionId!!)
+//                        }) {
+//                            Text("测下载(Pull)")
+//                        }
+//                        // 显示同步结果提示
+//                        inventoryStateUI.userMessage?.let {
+//                            Text(
+//                                text = "状态: $it",
+//                                color = Color.Red,
+//                                modifier = Modifier.padding(8.dp),
+//                                style = MaterialTheme.typography.bodySmall
+//                            )
+//                        }
+                        //endregion 🔥🔥🔥【临时测试区】结束 🔥🔥🔥
                         // 只有在盘库模式下才允许导入，防止乱改历史
                         if (!isReadOnly && isInventoryMode) {
+                            IconButton(onClick = { showSyncDialog = true }) {
+                                // 这里换个图标，比如 Icons.Default.Sync (如果找不到就用 Cloud)
+                                Icon(Icons.Default.CloudUpload, contentDescription = "同步数据")
+                            }
+
                             IconButton(onClick = {
                                 // 打开文件选择器，限制只能选 Excel
                                 excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"))
                             }) {
                                 // 暂时用个“上传/文件”的图标，如果没有可以用 Default.Edit
-                                Icon(Icons.Default.Edit, contentDescription = "导入Excel")
+                                Icon(Icons.Default.FileOpen, contentDescription = "导入Excel")
                             }
                         }
 
                         IconButton(onClick = {
                             // 启动“另存为”，默认文件名
-                            exportLauncher.launch("盘点数据_${sessionId}.xlsx")
+                            exportLauncher.launch("${LocalDate.now()}_盘点数据_${sessionId}.xlsx")
                         }) {
                             // 用一个向上的箭头或者下载图标
-                            Icon(Icons.Default.ArrowUpward, contentDescription = "导出Excel")
+                            Icon(Icons.Default.FileDownload, contentDescription = "导出Excel")
                         }
 
                         if (!isReadOnly && isInventoryMode) {
                             IconButton(onClick = {
                                 // 触发归档检查逻辑 (需要协程或传给 VM)
                                 scope.launch {
-                                    val unverifiedCount = viewModel.tryFinishSession(sessionId)
+                                    val unverifiedCount = sessionViewModel.tryFinishSession(sessionId)
                                     if (unverifiedCount == -1) {
                                         // 成功归档 -> UI 会自动监听到 status 变了，刷新界面
                                         // 可以弹个 Toast: "归档成功！"
@@ -370,7 +354,7 @@ fun InventoryScreen(
                 onQueryChange = { searchQuery = it },
                 onSearch = {
                     // 触发 ViewModel 的搜索逻辑
-                    viewModel.performSearch(searchQuery, isInventoryMode)
+                    inventoryViewModel.performSearch(searchQuery, isInventoryMode)
                     focusManager.clearFocus() // 收起键盘
                 },
                 isInventoryMode = isInventoryMode,
@@ -378,7 +362,7 @@ fun InventoryScreen(
             )
 
 
-            if (uiState.isLoading && !isSyncing) {
+            if (inventoryStateUI.isLoading && !isSyncing) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
@@ -386,29 +370,49 @@ fun InventoryScreen(
                 if (isInventoryMode) {
                     Row(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.End // 靠右显示
+                            .fillMaxWidth() // 占满整行宽度
+                            .padding(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 8.dp), // 外边距
+                        verticalAlignment = Alignment.CenterVertically, // 保证所有东西在垂直方向居中对齐
+                        horizontalArrangement = Arrangement.SpaceBetween // ✨关键：两端对齐（中间留空）
                     ) {
-                        Text(
-                            text = if (isQuickCheckMode) "⚡ 极速模式" else "普通模式",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (isQuickCheckMode) MaterialTheme.colorScheme.primary else Color.Gray
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(
-                            checked = isQuickCheckMode,
-                            onCheckedChange = { isQuickCheckMode = it }
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(text = if (uiState.isBatchProcessorEnabled) "长光模式✨" else "长光模式",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (uiState.isBatchProcessorEnabled) MaterialTheme.colorScheme.primary else Color.Gray) // 给用户看的标签
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(
+                                checked = uiState.isBatchProcessorEnabled, // 绑定状态
+                                onCheckedChange = { isChecked ->
+                                    // 3. 这里就是“监听”，当用户点击时调用 ViewModel
+                                    inventoryViewModel.toggleBatchProcessor(isChecked)
+                                }
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = if (isQuickCheckMode) "极速模式⚡" else "普通模式",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (isQuickCheckMode) MaterialTheme.colorScheme.primary else Color.Gray
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(
+                                checked = isQuickCheckMode,
+                                onCheckedChange = { isQuickCheckMode = it }
+                            )
+                        }
                     }
+
                 }
                 @OptIn(ExperimentalMaterial3Api::class)
                 PullToRefreshBox(
                     isRefreshing = isSyncing, // 直接绑定 ViewModel 的状态
                     onRefresh = {
                         // 触发刷新逻辑
-                        viewModel.refreshData(sessionId)
+                        inventoryViewModel.refreshData(sessionId)
                     },
                     modifier = Modifier.fillMaxSize()
                 ) {
@@ -416,71 +420,110 @@ fun InventoryScreen(
 
                     LazyColumn(modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = 100.dp)) {
-                        items(items = uiState.searchResults, key = { it.record.id }) { combined ->
+                        items(items = inventoryStateUI.searchResults, key = { it.record.id }) { combined ->
                             // 判断是否已查验 (备注里包含 "已查验")
                             val record = combined.record
                             val isChecked = record.remarks?.contains("已查验") == true
+                            val actionWidth = 84.dp
 
-                            Surface(
+
+                            Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 4.dp) // 卡片间距
+                                    .clip(RoundedCornerShape(12.dp)) // 【关键】裁剪内容，保证右边按钮的角也是圆的
                                     .combinedClickable(
-                                        onClick = {},       // 普通点击：暂时没定义，可以留空
+                                        onClick = {
+                                        /* 普通点击逻辑 onDismiss = { showDetailDialog = false }*/
+                                            if (!isQuickCheckMode && !isReadOnly) {
+                                                selectedRecord = combined
+                                                showOptionDialog = true
+                                            }
+
+                                        },
                                         onLongClick = {
-                                            // 逻辑分流：
+                                            // ... 你的长按逻辑 ...
                                             if (!isInventoryMode) {
-                                                // 1. 查询模式 -> 显示详情
                                                 selectedRecord = combined
                                                 showDetailDialog = true
-                                            } else {
-                                                // 2. 盘库模式
-                                                if (!isQuickCheckMode && !isReadOnly) {
-                                                    // 极速模式下 -> 禁用长按 (防误触)
-                                                } else {
-                                                    // 普通模式 -> 弹出编辑菜单
-                                                    selectedRecord = combined
-                                                    showOptionDialog = true
-                                                }
+                                            } else if (isQuickCheckMode && !isReadOnly) {
+                                                selectedRecord = combined
+                                                showOptionDialog = true
                                             }
                                         }
                                     ),
-                                color = Color.Transparent
+                                colors = CardDefaults.cardColors(
+
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainer// 设置卡片底色
+                                ),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                             ) {
-                                // 在这里放你的 Item UI，我们用 Row 来包装一下，以便把按钮放右边
+                                // 2. 内部使用 Row + IntrinsicSize.Min
                                 Row(
-                                    modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(IntrinsicSize.Min), // 【关键】让高度跟随内容，且允许子元素填满高度
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    // 左边：原有的 Item 内容 (占大部分宽度)
+                                    // === 左边：内容区域 ===
+                                    // 使用 weight(1f)，当右边没有东西时，它会自动占满 100% 宽度
                                     Box(modifier = Modifier.weight(1f)) {
+                                        // 这里引用刚才修改过的、没有 Card 包裹的 StockRecordItem
                                         StockRecordItem(combined = combined)
                                     }
 
-                                    // 右边：查验按钮 (仅在 盘库模式 + 极速模式 下显示)
+                                    // === 右边：查验按钮 (条件显示) ===
                                     if (isInventoryMode && isQuickCheckMode && !isReadOnly) {
+                                        // 只有满足条件时，这个 block 才会渲染
+                                        // 渲染时，左边的 weight(1f) 会让出空间；不渲染时，左边占满
+
                                         if (isChecked) {
-                                            // 已查验 -> 显示绿色标签
-                                            Text(
-                                                text = "✅ 已查验",
-                                                color = Color(0xFF4CAF50), // 绿色
-                                                style = MaterialTheme.typography.labelMedium,
-                                                modifier = Modifier.padding(start = 8.dp)
-                                            )
-                                        } else {
-                                            // 未查验 -> 显示按钮
-                                            Button(
-                                                onClick = { viewModel.quickCheck(combined) },
-                                                modifier = Modifier.padding(start = 8.dp),
-                                                // 稍微调小一点按钮
-                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                            // 已查验 -> 绿色标签区域
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxHeight() // 纵向填满
+                                                    .background(Color(0xFFE8F5E9)) // 淡淡的绿色背景
+                                                    .width(actionWidth),
+//                                                    .padding(horizontal = 12.dp),
+                                                contentAlignment = Alignment.Center
                                             ) {
-                                                Text("查验")
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.CheckCircle,
+                                                        contentDescription = null,
+                                                        tint = Color(0xFF22C55E).copy(alpha = 0.95f),
+                                                        modifier = Modifier.size(55.dp))
+                                                    Text(
+                                                        text = "已查验",
+                                                        color = Color(0xFF37A43D),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            // 未查验 -> 棕色按钮
+                                            Surface(
+                                                onClick = { inventoryViewModel.quickCheck(combined) },
+                                                modifier = Modifier
+                                                    .fillMaxHeight() // 纵向填满
+                                                    .width(actionWidth),   // 固定宽度
+                                                color = Color(0xFF038CF4).copy(alpha = 0.9f), // 棕色背景
+                                                contentColor = Color.White
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = "查验",
+                                                        style = MaterialTheme.typography.labelLarge,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                            HorizontalDivider()
+//                            HorizontalDivider()
                         }
                     }
 
@@ -494,7 +537,7 @@ fun InventoryScreen(
                     onDismiss = { showSyncDialog = false },
                     onUpload = { ip ->
                         // 调用上传
-                        viewModel.uploadDataToServer(ip)
+                        inventoryViewModel.uploadDataToServer(ip)
                         // 这里可以不关弹窗，等结果出来再关，或者直接关
                         showSyncDialog = false
                     },
@@ -502,7 +545,7 @@ fun InventoryScreen(
                         // 调用下载
                         val sid = sidString.toLongOrNull()
                         if (sid != null) {
-                            viewModel.downloadDataFromPC(ip, sid)
+                            inventoryViewModel.downloadDataFromPC(ip, sid)
                             showSyncDialog = false
                         } else {
                             // 可以提示 ID 格式不对，或者直接无视
@@ -512,7 +555,7 @@ fun InventoryScreen(
             }
 
             // 👇 [可选] 加一个 Loading 转圈圈
-            if (uiState.isLoading) {
+            if (inventoryStateUI.isLoading) {
                 CircularProgressIndicator()
             }
         }
@@ -524,7 +567,7 @@ fun InventoryScreen(
             onDismiss = { showAddDialog = false },
             sessionId = sessionId,
             onConfirm = { record ->
-                viewModel.addRecord(record)
+                inventoryViewModel.addRecord(record)
                 showAddDialog = false
             }
         )
@@ -542,7 +585,7 @@ fun InventoryScreen(
                 showEditDialog = true
             },
             onDelete = {
-                selectedRecord?.let { viewModel.deleteRecord(it.record) }
+                selectedRecord?.let { inventoryViewModel.deleteRecord(it.record) }
                 showOptionDialog = false
             },
             canDelete = canDelete // 传入权限判断
@@ -564,7 +607,7 @@ fun InventoryScreen(
             onDismiss = { showEditDialog = false },
             combined = selectedRecord!!, // [新增参数] 传入旧数据
             onConfirm = { updatedRecord ->
-                viewModel.updateRecord(updatedRecord)
+                inventoryViewModel.updateRecord(updatedRecord)
                 showEditDialog = false
             }
         )
@@ -577,7 +620,7 @@ fun InventoryScreen(
                 showScanScreen = false
                 // 核心逻辑：扫码 -> 填入搜索框 -> 自动触发搜索
                 searchQuery = result
-                viewModel.performSearch(result, isInventoryMode)
+                inventoryViewModel.performSearch(result, isInventoryMode)
                 focusManager.clearFocus() // 收起键盘
                 active = false // 关闭搜索建议框（如果需要）
             },
@@ -639,7 +682,7 @@ fun SearchBarArea(
         onValueChange = onQueryChange,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(16.dp),
+            .padding(12.dp),
         label = { Text(if (isInventoryMode) "扫描或输入 UDI / 批号" else "搜索名称、厂家、库位...") },
         trailingIcon = {
             Row {
@@ -671,109 +714,112 @@ fun StockRecordItem(combined: StockRecordCombined) {
     val isVerified = actQty != null
     val isError = isVerified && (actQty != bookQty)
 
-    Card(
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+    Column(modifier = Modifier.padding(16.dp)) {
 
-            // === 第一行：UDI 和 数量 ===
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top // 建议加上顶部对齐
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    // 显示产品名
+        // === 第一行：UDI 和 数量 ===
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top // 建议加上顶部对齐
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                // 显示产品名
+                Text(
+                    text = product?.productName ?: "未录入产品 (${record.di})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2
+                )
+                // 显示规格/型号
+                if (product != null) {
                     Text(
-                        text = product?.productName ?: "未录入产品 (${record.di})",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 2
-                    )
-                    // 显示规格/型号
-                    if (product != null) {
-                        Text(
-                            text = "${product.di} ${product.model ?: ""}".trim(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
-                        )
-                    }
-                }
-
-                // 显示数量
-                Column(horizontalAlignment = Alignment.End) {
-                    if (!isVerified) {
-                        // 1. 未查验状态
-                        Text(
-                            text = "${bookQty.toInt()}",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color.Blue
-                        )
-                        Text(
-                            text = "未盘",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.Gray
-                        )
-                    } else if (isError) {
-                        // 2. 差异状态 (红色高亮)
-                        Text(
-                            text = "实: ${actQty.toInt()}",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.error, // 红色
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "账: ${bookQty.toInt()}",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color.Gray,
-                            textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough // 删除线
-                        )
-                    } else {
-                        // 3. 正常状态 (绿色/主色)
-                        Text(
-                            text = "x${actQty.toInt()}",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color(0xFF4CAF50), // 绿色/蓝色
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = " 已盘",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.Gray
-                        )
-                    }
-                }
-            } // 👈 Row 在这里结束！
-
-            // === 分割线区域 (必须放在 Column 里，两个 Row 之间) ===
-            Spacer(modifier = Modifier.height(8.dp))
-            HorizontalDivider(thickness = 0.5.dp, color = Color.LightGray)
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // === 第二行：批号、效期、库位、厂家 ===
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                // 左下角信息
-                Column {
-                    Text("批号: ${record.batchNumber}", style = MaterialTheme.typography.bodyMedium)
-                    // 💡 建议：如果 expiryDate 是 Long 型 (如 20251231)，可能需要简单格式化一下，不然显示一串数字
-                    Text("效期: ${record.expiryDate}", style = MaterialTheme.typography.bodyMedium)
-                }
-
-                // 右下角信息
-                Column(horizontalAlignment = Alignment.End) {
-                    Text("库位: ${record.location}", style = MaterialTheme.typography.bodyMedium)
-
-                    val mfr = product?.manufacturer ?: "未知厂家"
-                    Text(
-                        text = if (mfr.length > 10) mfr.take(10) + "..." else mfr,
+                        text = "${product.di} ${product.model ?: ""}".trim(),
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
                 }
             }
+
+            // 显示数量
+            Column(horizontalAlignment = Alignment.End) {
+                if (!isVerified) {
+                    // 1. 未查验状态
+                    Text(
+                        text = "${bookQty.toInt()}",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.Blue,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "未盘",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Gray
+                    )
+                } else if (isError) {
+                    // 2. 差异状态 (红色高亮)
+                    Text(
+                        text = "实: ${actQty.toInt()}",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.error, // 红色
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "账: ${bookQty.toInt()}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Blue,
+                        textDecoration = TextDecoration.LineThrough // 删除线
+                    )
+                    Text(
+                        text = "差: ${actQty.toInt()-bookQty.toInt()}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Gray,
+                    )
+                } else {
+                    // 3. 正常状态 (绿色/主色)
+                    Text(
+                        text = "${actQty.toInt()}",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color(0xFF4CAF50), // 绿色/蓝色
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = " 已盘",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.Gray
+                    )
+                }
+            }
+        } // 👈 Row 在这里结束！
+
+        // === 分割线区域 (必须放在 Column 里，两个 Row 之间) ===
+        Spacer(modifier = Modifier.height(8.dp))
+        HorizontalDivider(thickness = 0.5.dp, color = Color.LightGray)
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // === 第二行：批号、效期、库位、厂家 ===
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            // 左下角信息
+            Column {
+                Text("批号: ${record.batchNumber}", style = MaterialTheme.typography.bodyMedium)
+                // 💡 建议：如果 expiryDate 是 Long 型 (如 20251231)，可能需要简单格式化一下，不然显示一串数字
+                Text("效期: ${record.expiryDate}", style = MaterialTheme.typography.bodyMedium)
+            }
+
+            // 右下角信息
+            Column(horizontalAlignment = Alignment.End) {
+                Text("库位: ${record.location}", style = MaterialTheme.typography.bodyMedium)
+
+                val mfr = product?.manufacturer ?: "未知厂家"
+                Text(
+                    text = if (mfr.length > 10) mfr.take(10) + "..." else mfr,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
         }
     }
+
+
 }
 
 // --- 子组件：盲盘/新增记录对话框 ---

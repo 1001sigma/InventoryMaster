@@ -6,6 +6,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
 import com.google.zxing.common.BitMatrix
 
+//用于生成二维码
 object QRCodeUtil {
     fun generateQRCode(content: String, width: Int = 512, height: Int = 512): Bitmap? {
         return try {

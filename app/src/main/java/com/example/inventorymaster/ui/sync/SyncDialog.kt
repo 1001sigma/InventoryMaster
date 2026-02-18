@@ -1,4 +1,4 @@
-package com.example.inventorymaster.ui
+package com.example.inventorymaster.ui.sync
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer

@@ -1,5 +1,6 @@
-package com.example.inventorymaster.data
+package com.example.inventorymaster.data.repository
 
+import com.example.inventorymaster.data.dto.SessionDto
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
@@ -60,7 +61,7 @@ interface InventoryRepository {
     suspend fun pullNewData(sessionId: Long): Result<String>
 
     //拉取云端列表
-    suspend fun fetchCloudSessions(ip: String): Result<List<com.example.inventorymaster.data.dto.SessionDto>>
+    suspend fun fetchCloudSessions(ip: String): Result<List<SessionDto>>
 
     fun saveServerIp(ip: String)
 

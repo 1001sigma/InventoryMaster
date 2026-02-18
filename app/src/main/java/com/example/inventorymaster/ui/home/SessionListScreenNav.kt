@@ -1,7 +1,12 @@
-package com.example.inventorymaster.ui
+package com.example.inventorymaster.ui.home // 你的包名
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -27,7 +32,6 @@ import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -45,12 +49,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -65,28 +66,31 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
 import com.example.inventorymaster.data.entity.InventorySession
+import com.example.inventorymaster.ui.ScanScreen
+import com.example.inventorymaster.ui.session.CloudTaskDialog
 import com.example.inventorymaster.utils.NetworkUtils
 import com.example.inventorymaster.utils.QRCodeUtil
 import com.example.inventorymaster.viewmodel.InventoryViewModel
+import com.example.inventorymaster.viewmodel.SessionViewModel
 import java.text.SimpleDateFormat
+import java.time.LocalDate
 import java.util.Date
 import java.util.Locale
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 
-@OptIn(ExperimentalFoundationApi::class,ExperimentalMaterial3Api::class)
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(
-    onSessionClick: (Long) -> Unit,
-    viewModel: InventoryViewModel = viewModel(factory = InventoryViewModel.Factory)
+fun SessionListScreen(
+    sessionViewModel: SessionViewModel,
+    inventoryViewModel: InventoryViewModel,
+    onSessionClick: (Long) -> Unit
 ) {
+    val sessionState by sessionViewModel.uiState.collectAsState()
+    val inventoryState by inventoryViewModel.uiState.collectAsState()
+
     val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsState()
     var showCreateDialog by remember { mutableStateOf(false) }
     // 控制长按菜单的显示
     var showMenuDialog by remember { mutableStateOf(false) }
@@ -94,28 +98,16 @@ fun HomeScreen(
     // 控制二次确认弹窗的显示
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showUnlockConfirm by remember { mutableStateOf(false) }
-    var showProductManager by remember { mutableStateOf(false) } // 控制页面跳转
-    // 如果处于管理模式，显示管理页面，覆盖当前内容
-    if (showProductManager) {
-        BackHandler { showProductManager = false } // 拦截返回键
-        ProductManagerScreen(
-            onBack = { showProductManager = false }
-        )
-        return // 直接返回，不渲染下面的 HomeScreen
-    }
     // 新增状态控制大厅弹窗
     var showCloudHall by remember { mutableStateOf(false) }
     var showFabMenu by remember { mutableStateOf(false) }
-    // 监听 ViewModel 里的列表数据
-    val cloudSessions by viewModel.cloudSessions.collectAsState()
-
     // 1. 状态管理
     var showScanner by remember { mutableStateOf(false) } // 扫码器开关
     var showQRCodeSessionId by remember { mutableStateOf<Long?>(null) } // 二维码弹窗开关
     var showManualIpDialog by remember { mutableStateOf<Long?>(null) } // 手动输IP弹窗开关 (存目标ID)
     // 2. 监听 ViewModel 数据
-    val lastIp = viewModel.lastServerIp
-    val isLoading = viewModel.isGlobalLoading
+    val lastIp = inventoryViewModel.lastServerIp
+    val isLoading = inventoryViewModel.isGlobalLoading
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -132,127 +124,115 @@ fun HomeScreen(
         }
     }
 
-
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("📦 库存盘点任务") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            )
-        },
-        floatingActionButton = {
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(16.dp) // 按钮之间的间距
+    // --- 2. 界面布局 (Box 代替 Scaffold) ---
+    Box(modifier = Modifier.fillMaxSize()) {
+        // A. 列表层
+        if (sessionState.sessions.isEmpty()) {
+            // 空状态提示
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("暂无任务，请点击右下角 + 号创建", color = Color.Gray)
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    bottom = 88.dp,
+                    top = 16.dp,
+                    start = 16.dp,
+                    end = 16.dp
+                ), // 底部留出空间给 FAB
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // 1. 上方悬浮按钮 (产品库入口)
-                FloatingActionButton(
-                    onClick = { showProductManager = true },
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                ) {
-                    // 也可以用 Icons.Default.List 或 Icons.Default.Edit
-                    Icon(Icons.Default.Storage, contentDescription = "管理产品库")
+                items(sessionState.sessions, key = { it.id }) { session ->
+                    SessionItem(
+                        session = session,
+                        onClick = { onSessionClick(session.id) },
+                        onLongClick = {
+                            selectedSession = session
+                            showMenuDialog = true
+                        },
+                        onShowQRCode = { id -> showQRCodeSessionId = id }
+                    )
                 }
-
-                Box {
-                    // 主按钮
-                    FloatingActionButton(
-                        onClick = { showFabMenu = true }, // 点击展开菜单
-                        containerColor = MaterialTheme.colorScheme.primary
-                    ) {
-                        // 图标可以换成 Add (加号) 或者 Menu (菜单)
-                        Icon(Icons.Default.Add, contentDescription = "操作菜单")
-                    }
-
-                    // 挂载在按钮旁边的菜单
-                    DropdownMenu(
-                        expanded = showFabMenu,
-                        onDismissRequest = { showFabMenu = false },
-                        offset = DpOffset(x = 0.dp, y = (-8).dp) // 稍微向上一点，不遮挡按钮
-                    ) {
-                        // 选项 A: 新建本地盘点 (原逻辑)
-                        DropdownMenuItem(
-                            text = { Text("新建本地盘点") },
-                            leadingIcon = { Icon(Icons.Default.Create, contentDescription = "新建任务") },
-                            onClick = {
-                                showFabMenu = false
-                                showCreateDialog = true
-                            }
-                        )
-
-                        // 选项 B: 云端任务大厅 (新逻辑)
-                        DropdownMenuItem(
-                            text = { Text("云端任务大厅") },
-                            leadingIcon = { Icon(Icons.Default.Cloud, null) },
-                            onClick = {
-                                showFabMenu = false
-                                showCloudHall = true // 打开大厅弹窗
-                            }
-                        )
-
-                        // 选项 C: 扫码加入 (预留入口)
-                        DropdownMenuItem(
-                            text = { Text("扫码加入 (开发中)") },
-                            leadingIcon = { Icon(Icons.Default.QrCodeScanner, null) },
-                            onClick = {
-                                showFabMenu = false
-                                val hasPermission = ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.CAMERA
-                                ) == PackageManager.PERMISSION_GRANTED
-
-                                if (hasPermission) {
-                                    showScanner = true // 有权限，直接开
-                                } else {
-                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA) // 没权限，去申请
-                                }
-                                // 暂时留空，或者弹个 Toast
-                                // Toast.makeText(context, "即将上线", Toast.LENGTH_SHORT).show()
-                            }
-                        )
-                    }
-                }
-
             }
         }
-    ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier.padding(innerPadding).fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+
+        // B. 悬浮按钮层 (自己定位到右下角)
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp) // 距离屏幕边缘的距离
         ) {
-            items(uiState.sessions, key = { it.id }) { session ->
-                SessionItem(
-                    session = session,
-                    onClick = { onSessionClick(session.id) },
-                    onLongClick = {
-                        selectedSession = session
-                        showMenuDialog = true
-                    },
-                    onShowQRCode = {id -> showQRCodeSessionId = id}
+            // 主按钮
+            FloatingActionButton(
+                onClick = { showFabMenu = true },
+                containerColor = MaterialTheme.colorScheme.primary
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "操作菜单")
+            }
+
+            // 挂载在按钮旁边的菜单
+            DropdownMenu(
+                expanded = showFabMenu,
+                onDismissRequest = { showFabMenu = false },
+                offset = DpOffset(x = 0.dp, y = (-8).dp)
+            ) {
+                // 选项 A: 新建本地盘点
+                DropdownMenuItem(
+                    text = { Text("新建本地盘点") },
+                    leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
+                    onClick = {
+                        showFabMenu = false
+                        showCreateDialog = true
+                    }
+                )
+
+                // 选项 B: 云端任务大厅
+                DropdownMenuItem(
+                    text = { Text("云端任务大厅") },
+                    leadingIcon = { Icon(Icons.Default.Cloud, null) },
+                    onClick = {
+                        showFabMenu = false
+                        showCloudHall = true
+                    }
+                )
+
+                // 选项 C: 扫码加入
+                DropdownMenuItem(
+                    text = { Text("扫码加入") },
+                    leadingIcon = { Icon(Icons.Default.QrCodeScanner, null) },
+                    onClick = {
+                        showFabMenu = false
+                        val hasPermission = ContextCompat.checkSelfPermission(
+                            context, Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+
+                        if (hasPermission) {
+                            showScanner = true
+                        } else {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    }
                 )
             }
         }
     }
 
-    // --- 弹窗逻辑区 ---
 
-    // 1. 新建任务弹窗 (你之前应该有，这里略写)
+// --- 弹窗逻辑区 ---
+
+// 1. 新建任务弹窗 (你之前应该有，这里略写)
     if (showCreateDialog) {
         CreateSessionDialog(
             onDismiss = { showCreateDialog = false },
             onConfirm = { name ->
-                viewModel.createNewSession(name)
+                sessionViewModel.createNewSession(name)
                 showCreateDialog = false
             }
         )
     }
 
-    // 2. 长按操作菜单 (核心逻辑)
+// 2. 长按操作菜单 (核心逻辑)
     if (showMenuDialog && selectedSession != null) {
         val session = selectedSession!!
         SessionActionDialog(
@@ -265,7 +245,7 @@ fun HomeScreen(
                     showUnlockConfirm = true
                 } else {
                     // 如果是锁定，直接锁
-                    viewModel.toggleLockSession(session)
+                    sessionViewModel.toggleLockSession(session)
                     showMenuDialog = false
                 }
             },
@@ -276,7 +256,7 @@ fun HomeScreen(
         )
     }
 
-    // 3. 删除确认警告 (红色预警)
+// 3. 删除确认警告 (红色预警)
     if (showDeleteConfirm && selectedSession != null) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
@@ -286,7 +266,7 @@ fun HomeScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.deleteSession(selectedSession!!)
+                        sessionViewModel.deleteSession(selectedSession!!)
                         showDeleteConfirm = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
@@ -300,7 +280,7 @@ fun HomeScreen(
         )
     }
 
-    // 4. 解锁确认弹窗
+// 4. 解锁确认弹窗
     if (showUnlockConfirm && selectedSession != null) {
         AlertDialog(
             onDismissRequest = { showUnlockConfirm = false },
@@ -308,7 +288,7 @@ fun HomeScreen(
             text = { Text("解锁后，该任务将允许被删除。\n(注：数据内容依然是只读的)") },
             confirmButton = {
                 Button(onClick = {
-                    viewModel.toggleLockSession(selectedSession!!)
+                    sessionViewModel.toggleLockSession(selectedSession!!)
                     showUnlockConfirm = false
                 }) {
                     Text("确认解锁")
@@ -320,23 +300,23 @@ fun HomeScreen(
         )
     }
 
-    //云端任务大厅弹窗
+//云端任务大厅弹窗
     if (showCloudHall) {
         CloudTaskDialog(
             onDismiss = { showCloudHall = false },
-            cloudSessions = cloudSessions,
+            cloudSessions = sessionState.cloudSessions,
             onFetchList = { ip ->
-                viewModel.fetchCloudTasks(ip) // 刷新列表
+                sessionViewModel.fetchCloudTasks(ip) // 刷新列表
             },
             onJoinTask = { ip, sessionId ->
                 // 点击加入：调用下载逻辑
-                viewModel.downloadDataFromPC(ip, sessionId)
+                inventoryViewModel.downloadDataFromPC(ip, sessionId)
                 showCloudHall = false
             }
         )
     }
 
-    // 1. 全局 Loading 弹窗 (防止用户以为死机)
+// 1. 全局 Loading 弹窗 (防止用户以为死机)
     if (isLoading) {
         AlertDialog(
             onDismissRequest = {}, // 禁止点击外部关闭
@@ -351,18 +331,17 @@ fun HomeScreen(
         )
     }
 
-    // 2. 发送端：增强版二维码弹窗 (带 IP)
+// 2. 发送端：增强版二维码弹窗 (带 IP)
     if (showQRCodeSessionId != null) {
         val targetId = showQRCodeSessionId!!
 
         // A. 检查网络类型
         val isWifi = NetworkUtils.isWifiOrEthernetConnected(context)
-        android.util.Log.d("DEBUG_IP", "Current IP: '$lastIp', isWifi: $isWifi")
+        Log.d("DEBUG_IP", "Current IP: '$lastIp', isWifi: $isWifi")
 
         // B. 决定二维码内容
         // 如果有记录的 IP 且在 WiFi 下，则生成 IP|ID，否则只生成 ID
         val qrContent = if (isWifi && lastIp.isNotEmpty()) "$lastIp|$targetId" else "$targetId"
-
         EnhancedQRCodeDialog(
             content = qrContent,
             displayId = targetId,
@@ -372,7 +351,7 @@ fun HomeScreen(
         )
     }
 
-    // 3. 接收端：手动输入 IP 弹窗 (当扫码失败时弹出)
+// 3. 接收端：手动输入 IP 弹窗 (当扫码失败时弹出)
     if (showManualIpDialog != null) {
         val targetId = showManualIpDialog!!
         ManualIpDialog(
@@ -380,13 +359,14 @@ fun HomeScreen(
             onDismiss = { showManualIpDialog = null },
             onConfirm = { ip ->
                 showManualIpDialog = null
-                viewModel.downloadDataFromPC(ip, targetId)
+                inventoryViewModel.downloadDataFromPC(ip, targetId)
             }
         )
     }
 
-    // 4. 接收端：扫码器逻辑 (智能解析)
+// 4. 接收端：扫码器逻辑 (智能解析)
     if (showScanner) {
+        BackHandler { showScanner = false }
         ScanScreen(
             onClose = { showScanner = false },
             onScanResult = { resultRaw ->
@@ -402,9 +382,10 @@ fun HomeScreen(
 
                         if (NetworkUtils.isValidIpAddress(ip)) {
                             // 校验通过，直接下载
-                            viewModel.downloadDataFromPC(ip, id)
+                            inventoryViewModel.downloadDataFromPC(ip, id)
                         } else {
-                            Toast.makeText(context, "二维码中的 IP 格式无效", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "二维码中的 IP 格式无效", Toast.LENGTH_LONG)
+                                .show()
                         }
                     }
                     // === 情况 B: 只有 ID (或旧版码) ===
@@ -414,7 +395,8 @@ fun HomeScreen(
                             // 既然没有 IP，直接弹窗让用户确认/输入
                             showManualIpDialog = id
                         } else {
-                            Toast.makeText(context, "无法识别的任务码", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "无法识别的任务码", Toast.LENGTH_SHORT)
+                                .show()
                         }
                     }
                 } catch (e: Exception) {
@@ -492,7 +474,9 @@ fun SessionItem(
                         Icon(
                             Icons.Default.Lock,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp).align(Alignment.CenterVertically),
+                            modifier = Modifier
+                                .size(16.dp)
+                                .align(Alignment.CenterVertically),
                             tint = statusColor
                         )
                         Spacer(modifier = Modifier.width(4.dp))
@@ -506,7 +490,7 @@ fun SessionItem(
                 }
             }
         }
-        
+
     }
 }
 
@@ -563,7 +547,7 @@ fun SessionActionDialog(
 // --- 简单的创建对话框 (如果你还没有的话) ---
 @Composable
 fun CreateSessionDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var text by remember { mutableStateOf("") }
+    var text by remember { mutableStateOf("${LocalDate.now()} 盘点") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("新建盘点任务") },
@@ -571,7 +555,7 @@ fun CreateSessionDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
-                label = { Text("任务名称 (如: 10月盘点)") }
+                label = { Text("任务名称 (如: xxxx-xx-xx 盘点任务)") }
             )
         },
         confirmButton = {
@@ -626,7 +610,11 @@ fun EnhancedQRCodeDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                Text("任务 ID: $displayId", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    "任务 ID: $displayId",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
 
                 // 🔍 调试/辅助信息
                 Spacer(modifier = Modifier.height(8.dp))
@@ -637,12 +625,24 @@ fun EnhancedQRCodeDialog(
                 )
 
                 if (content.contains("|")) {
-                    Text("✅ 已包含 IP，扫码即连", color = Color(0xFF4CAF50), style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "✅ 已包含 IP，扫码即连",
+                        color = Color(0xFF4CAF50),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 } else {
-                    Text("❌ 未包含 IP，扫码后需手动输入", color = Color.Red, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "❌ 未包含 IP，扫码后需手动输入",
+                        color = Color.Red,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
                 if (missingIpReason != null) {
-                    Text("($missingIpReason)", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "($missingIpReason)",
+                        color = Color.Gray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
         },
@@ -678,7 +678,8 @@ fun ManualIpDialog(
             Button(onClick = {
                 if (NetworkUtils.isValidIpAddress(ip)) onConfirm(ip)
                 else {
-                    Toast.makeText(context, "IP 格式错误 (例如 192.168.1.5)", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "IP 格式错误 (例如 192.168.1.5)", Toast.LENGTH_SHORT)
+                        .show()
                 }
             }) { Text("确定连接") }
         },

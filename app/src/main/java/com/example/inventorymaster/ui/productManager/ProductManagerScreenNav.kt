@@ -1,4 +1,4 @@
-package com.example.inventorymaster.ui
+package com.example.inventorymaster.ui.productManager
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -21,13 +20,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -45,54 +41,40 @@ import com.example.inventorymaster.viewmodel.InventoryViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProductManagerScreen(
-    onBack: () -> Unit,
     viewModel: InventoryViewModel = viewModel(factory = InventoryViewModel.Factory)
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
     var editingProduct by remember { mutableStateOf<ProductBase?>(null) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("📚 基础产品库管理") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                }
-            )
-        }
-    ) { innerPadding ->
-        Column(modifier = Modifier.padding(innerPadding).padding(16.dp)) {
-            // 1. 搜索框
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = {
-                    searchQuery = it
-                    viewModel.searchProducts(it)
-                },
-                label = { Text("搜索名称/厂家/编码/DI") },
-                leadingIcon = { Icon(Icons.Default.Search, null) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        // 1. 搜索框
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = {
+                searchQuery = it
+                viewModel.searchProducts(it)
+            },
+            label = { Text("搜索名称/厂家/编码/DI") },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
 
-            Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-            if (uiState.productList.isEmpty() && searchQuery.isBlank()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("请输入关键词进行搜索", color = Color.Gray)
-                }
-            } else {
-                // 2. 列表
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(uiState.productList, key = { it.di }) { product ->
-                        ProductItem(product = product, onClick = { editingProduct = product })
-                    }
+        if (uiState.productList.isEmpty() && searchQuery.isBlank()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("请输入关键词进行搜索", color = Color.Gray)
+            }
+        } else {
+            // 2. 列表
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(uiState.productList, key = { it.di }) { product ->
+                    ProductItem(product = product, onClick = { editingProduct = product })
                 }
             }
         }

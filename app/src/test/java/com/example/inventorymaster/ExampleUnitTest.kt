@@ -1,6 +1,7 @@
 
 package com.example.inventorymaster
 
+import com.example.inventorymaster.utils.BatchCodeProcessor
 import com.example.inventorymaster.utils.Gs1Parser
 import org.junit.Test
 import org.junit.Assert.*
@@ -65,3 +66,5 @@ class Gs1ParserTest {
 
 
 }
+
+

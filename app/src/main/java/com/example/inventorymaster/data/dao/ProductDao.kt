@@ -36,8 +36,7 @@ interface ProductDao {
 //    @Query("SELECT * FROM product_base WHERE di = :di LIMIT 1")
 //    suspend fun getProductByDione(di: String): ProductBase?
 
-    // 2. [新增] 安全更新：用于覆盖旧产品
-    // ⚠️ 绝对不能用 REPLACE，否则有盘点记录时会闪退！
+    // 2. [新增] 安全更新：用于覆盖旧产品 绝对不能用 REPLACE，否则有盘点记录时会闪退！
     @Update
     suspend fun updateProduct(product: ProductBase)
 }

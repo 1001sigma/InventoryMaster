@@ -35,7 +35,7 @@ object Gs1Parser {
         "30" to AIRule("Count", false, maxLength = 8),
         "37" to AIRule("Count", false, maxLength = 8),
         "91" to AIRule("Internal", false, maxLength = 30)
-        // 可根据需要随时添加...
+
     )
 
     /** 解析结果封装 */
@@ -64,7 +64,7 @@ object Gs1Parser {
         // 1. 预处理：解决括号和分隔符问题
         val processedStr = preprocess(input)
 
-        // 简单判断：如果不含 GS1 特征（既不是01开头，也没有分隔符），直接视为非 UDI
+        // 判断：如果不含 GS1 特征（既不是01开头，也没有分隔符），直接视为非 UDI
         // 注意：这里为了宽容度，只要能解析出任何一个 Key 都算成功
 
         val resultItems = linkedMapOf<String, String>()
@@ -118,7 +118,20 @@ object Gs1Parser {
      */
     private fun preprocess(raw: String): String {
         var s = raw.trim()
-
+        // === 清洗协议头 (Symbology Identifier) ===
+        // 很多专业扫码引擎会返回 ISO/IEC 15424 标准前缀
+        // ]C1 = GS1-128 
+        // ]Q1 = GS1 QR Code
+        // ]d2 = GS1 DataMatrix
+        // ]e0 = GS1 DataBar
+        // 这些前缀通常占3个字符，代表"这是GS1格式的数据"，需要去掉才能解析
+        if (s.startsWith("]C1") ||
+            s.startsWith("]Q1") ||
+            s.startsWith("]d2") ||
+            s.startsWith("]e0") ||
+            s.startsWith("]L1")) {
+            s = s.substring(3)
+        }
         // 1. 替换常见的 FNC1 字符为统一的 SEP
         s = s.replace(0x1D.toChar(), SEP) // ASCII 29 Group Separator
             .replace(0xE8.toChar(), SEP) // 有些扫码枪会映射为这个
