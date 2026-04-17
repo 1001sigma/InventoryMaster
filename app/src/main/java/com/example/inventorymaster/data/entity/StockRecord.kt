@@ -1,5 +1,6 @@
 package com.example.inventorymaster.data.entity
 
+import android.os.Build
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
@@ -55,11 +56,11 @@ data class StockRecord(
 
     val actualQuantity: Double? = null,     //实际数量（初始为null）
     val remarks: String? = null, // 备注 (存“已查验”等状态)
-    val sourceType: Int = 0,    // 0=手动, 1=Excel导入, 2=扫码
+    val sourceType: Int = 1,    // 0=手动, 1=Excel导入, 2=云端下载
 
     // 1. 操作人 (必填，用于区分是谁改的)
     @ColumnInfo(name = "operator")
-    var operator: String = "",
+    var operator: String = Build.MODEL,
 
     // 2. 最后修改时间 (必填，用于版本对比)
     @ColumnInfo(name = "last_update_time")

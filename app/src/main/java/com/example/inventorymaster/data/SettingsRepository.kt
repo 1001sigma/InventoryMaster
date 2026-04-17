@@ -19,7 +19,9 @@ data class UserSettings(
     // --- 扫码设置 (默认值写在这里) ---
     val isSimpleMode: Boolean = false,      // 简单分词模式
     val showOcrMask: Boolean = true,        // OCR 遮罩
-    val enableMultiScan: Boolean = false    // 多码模式
+    val enableMultiScan: Boolean = false,    // 多码模式
+    // 👇 新增：DI 校验开关状态
+    val enableDiValidation: Boolean = false
 )
 
 class SettingsRepository(private val context: Context) {
@@ -34,6 +36,9 @@ class SettingsRepository(private val context: Context) {
         val IS_SIMPLE_MODE = booleanPreferencesKey("is_simple_mode")
         val SHOW_OCR_MASK = booleanPreferencesKey("show_ocr_mask")
         val ENABLE_MULTI_SCAN = booleanPreferencesKey("enable_multi_scan")
+
+        // 👇 新增：DI 校验的 Key
+        val ENABLE_DI_VALIDATION = booleanPreferencesKey("enable_di_validation")
     }
 
     // 1. 读取数据 (暴露为一个 Flow，这样数据一变，UI 就能收到通知)
@@ -47,7 +52,9 @@ class SettingsRepository(private val context: Context) {
                 // 【新增】读取扫码设置
                 isSimpleMode = preferences[Keys.IS_SIMPLE_MODE] ?: false,
                 showOcrMask = preferences[Keys.SHOW_OCR_MASK] ?: true,
-                enableMultiScan = preferences[Keys.ENABLE_MULTI_SCAN] ?: false
+                enableMultiScan = preferences[Keys.ENABLE_MULTI_SCAN] ?: false,
+                // 👇 新增：读取 DI 校验开关状态
+                enableDiValidation = preferences[Keys.ENABLE_DI_VALIDATION] ?: false
             )
         }
 
@@ -80,5 +87,9 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun updateMultiScan(enable: Boolean) {
         context.dataStore.edit { it[Keys.ENABLE_MULTI_SCAN] = enable }
+    }
+
+    suspend fun updateDiValidation(enable: Boolean) {
+        context.dataStore.edit { it[Keys.ENABLE_DI_VALIDATION] = enable }
     }
 }

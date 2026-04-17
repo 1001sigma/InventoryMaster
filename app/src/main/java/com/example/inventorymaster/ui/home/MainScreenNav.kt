@@ -16,6 +16,7 @@ import com.example.inventorymaster.ui.productManager.ProductManagerScreen
 import com.example.inventorymaster.viewmodel.InventoryViewModel
 import com.example.inventorymaster.viewmodel.SessionViewModel
 import com.example.inventorymaster.viewmodel.SettingsViewModel
+import com.example.inventorymaster.viewmodel.SyncViewModel
 
 // 记得导入你原本的 HomeScreen，我们稍后会用到它
 
@@ -25,6 +26,7 @@ fun MainScreen(
     sessionViewModel: SessionViewModel,
     inventoryViewModel: InventoryViewModel,
     settingsViewModel: SettingsViewModel,
+    syncViewModel: SyncViewModel,
     onSessionClick: (Long) -> Unit
 ) {
     val navController = rememberNavController()
@@ -105,6 +107,7 @@ fun MainScreen(
                 SessionListScreen(
                     sessionViewModel = sessionViewModel,
                     inventoryViewModel = inventoryViewModel, // 传进去，因为首页的大FAB需要用
+                    syncViewModel= syncViewModel,
                     onSessionClick = onSessionClick
                 )
             }

@@ -17,7 +17,7 @@ interface InventoryApiService {
     suspend fun uploadData(@Body data: SyncData): Response<Map<String, Any>>
 
     @GET("/api/download")
-    suspend fun downloadData(@Query("sessionId") sessionId: Long): Response<SyncData>
+    suspend fun downloadData(@Query("sessionUuid") sessionUuid: String): Response<SyncData>
 
     @GET("/api/sessions")
     suspend fun getSessionList(): Response<List<com.example.inventorymaster.data.dto.SessionDto>>

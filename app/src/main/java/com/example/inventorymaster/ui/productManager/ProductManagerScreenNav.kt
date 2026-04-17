@@ -120,9 +120,8 @@ fun EditProductDialog(
 ) {
     var name by remember { mutableStateOf(product.productName) }
     var spec by remember { mutableStateOf(product.specification ?: "") }
-    var model by remember { mutableStateOf(product.model ?: "") }
     var mfr by remember { mutableStateOf(product.manufacturer) }
-    var matCode by remember { mutableStateOf(product.materialCode ?: "") }
+    var regCert by remember { mutableStateOf(product.registrationCert ?: "" ) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -131,13 +130,15 @@ fun EditProductDialog(
             Column(modifier = Modifier.fillMaxWidth()) {
                 // DI 是主键，禁止修改，只读显示
                 Text("DI: ${product.di}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text("物料编码: ${product.materialCode ?: "-"}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 Spacer(modifier = Modifier.height(8.dp))
 
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("产品名称") })
                 OutlinedTextField(value = spec, onValueChange = { spec = it }, label = { Text("规格") })
-                OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("型号") })
+                OutlinedTextField(value = regCert, onValueChange = { regCert = it }, label = { Text("注册证号") })
                 OutlinedTextField(value = mfr, onValueChange = { mfr = it }, label = { Text("生产厂家") })
-                OutlinedTextField(value = matCode, onValueChange = { matCode = it }, label = { Text("物料编码") })
+
+
             }
         },
         confirmButton = {
@@ -145,9 +146,8 @@ fun EditProductDialog(
                 onConfirm(product.copy(
                     productName = name,
                     specification = spec,
-                    model = model,
                     manufacturer = mfr,
-                    materialCode = matCode
+                    registrationCert = regCert
                 ))
             }) { Text("保存") }
         },

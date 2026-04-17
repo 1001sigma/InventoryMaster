@@ -113,6 +113,39 @@ object Gs1Parser {
     }
 
     /**
+     * 校验 DI (GTIN) 校验码 - 采用 GS1 Modulo 10 算法
+     * 可被外部单独调用，例如：Gs1Parser.isValidDI("10012345678902")
+     *
+     * @param di 待校验的 DI 字符串
+     * @return true 如果校验通过
+     */
+    fun isValidDI(di: String?): Boolean {
+        if (di.isNullOrBlank()) return false
+        // GS1 的 DI/GTIN 通常是纯数字，且合法长度常见为 8, 12, 13, 14 位
+        if (!di.all { it.isDigit() }) return false
+        if (di.length !in listOf(8, 12, 13, 14)) return false
+
+        // 取出自带的最后一位校验位
+        val checkDigit = di.last().digitToInt()
+
+        var sum = 0
+        var multiplier = 3 // 根据 GS1 规则，从右向左遍历，第一位乘数为 3
+
+        // 不计算最后一位校验位，因此从 di.length - 2 开始向左遍历
+        for (i in di.length - 2 downTo 0) {
+            sum += di[i].digitToInt() * multiplier
+            // 交替乘数: 3 -> 1 -> 3 -> 1
+            multiplier = if (multiplier == 3) 1 else 3
+        }
+
+        // 计算 10 的整数倍差距
+        val calculatedCheckDigit = if (sum % 10 == 0) 0 else 10 - (sum % 10)
+
+        // 对比计算出的校验位和实际的校验位
+        return calculatedCheckDigit == checkDigit
+    }
+
+    /**
      * 关键修正：预处理
      * 将人类可读的括号格式 (10)ABC 转换为机器码 10ABC<GS>
      */

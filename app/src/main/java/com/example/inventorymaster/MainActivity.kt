@@ -23,6 +23,7 @@ import com.example.inventorymaster.viewmodel.InventoryViewModel
 import com.example.inventorymaster.viewmodel.SessionViewModel
 import com.example.inventorymaster.viewmodel.SettingsViewModel
 import androidx.compose.runtime.getValue
+import com.example.inventorymaster.viewmodel.SyncViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,6 +38,7 @@ class MainActivity : ComponentActivity() {
             // 2. 分别获取两个 ViewModel
             val sessionViewModel: SessionViewModel = viewModel(factory = appFactory)
             val inventoryViewModel: InventoryViewModel = viewModel(factory = appFactory)
+            val syncViewModel: SyncViewModel = viewModel(factory = appFactory)
             val settingsViewModel: SettingsViewModel = viewModel(factory = appFactory) // 🔥 获取 ViewModel
             val settingsState by settingsViewModel.uiState.collectAsState()
             val isDarkTheme = when (settingsState.themeMode) {
@@ -64,6 +66,7 @@ class MainActivity : ComponentActivity() {
                                 inventoryViewModel= inventoryViewModel,
                                 sessionViewModel= sessionViewModel,
                                 settingsViewModel = settingsViewModel,
+                                syncViewModel = syncViewModel,
                                 onSessionClick = { sessionId ->
                                     // 点击列表时，命令司机开车去 inventory 页面，并带上 id
                                     navController.navigate("inventory/$sessionId")
@@ -88,6 +91,7 @@ class MainActivity : ComponentActivity() {
                                 sessionId = sessionId,
                                 inventoryViewModel= inventoryViewModel,
                                 sessionViewModel= sessionViewModel,
+                                syncViewModel = syncViewModel,
                                 onBackClick = { navController.popBackStack() } // 返回上一页
                             )
                         }

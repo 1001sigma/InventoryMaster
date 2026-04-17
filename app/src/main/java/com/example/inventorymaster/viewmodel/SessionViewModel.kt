@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.inventorymaster.data.dto.SessionDto
 import com.example.inventorymaster.data.entity.InventorySession
+import com.example.inventorymaster.data.entity.SessionWithProgress
 import com.example.inventorymaster.data.repository.InventoryRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,7 +13,7 @@ import kotlinx.coroutines.launch
 
 // 1. 定义专属的小状态：只管任务列表
 data class SessionUiState(
-    val sessions: List<InventorySession> = emptyList(), // 本地任务
+    val sessions: List<SessionWithProgress> = emptyList(), // 本地任务
     val cloudSessions: List<SessionDto> = emptyList(),  // 云端任务
     val isLoading: Boolean = false,
     val userMessage: String? = null
@@ -27,7 +28,7 @@ class SessionViewModel(private val repository: InventoryRepository) : ViewModel(
     init {
         // 3. 启动时自动监听数据库里的任务列表
         viewModelScope.launch {
-            repository.getAllSessions().collect { sessionList ->
+            repository.getAllSessionsWithProgress().collect { sessionList ->
                 _uiState.value = _uiState.value.copy(sessions = sessionList)
             }
         }

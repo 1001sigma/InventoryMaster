@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.example.inventorymaster.data.entity.InventorySession
+import com.example.inventorymaster.data.entity.SessionWithProgress
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -34,6 +35,16 @@ interface SessionDao {
     //[新增] 更新状态 (归档/锁定/解锁)
     @Query("UPDATE inventory_sessions SET status = :newStatus WHERE id = :sessionId")
     suspend fun updateStatus(sessionId: Long, newStatus: Int)
+
+    @Query("""
+    SELECT 
+        s.*,
+        (SELECT COUNT(*) FROM stock_records WHERE sessionId = s.id) as totalCount,
+        (SELECT COUNT(*) FROM stock_records WHERE sessionId = s.id AND remarks LIKE '%已查验%') as verifiedCount
+    FROM inventory_sessions s
+    ORDER BY s.date DESC
+""")
+    fun getAllSessionsWithProgress(): Flow<List<SessionWithProgress>>
 
     //[新增] 删除任务 (级联删除会在 Entity 定义 ForeignKey 时处理，或者手动删)
     @androidx.room.Delete

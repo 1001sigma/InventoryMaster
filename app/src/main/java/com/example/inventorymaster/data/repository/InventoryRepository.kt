@@ -7,10 +7,12 @@ import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
 import com.example.inventorymaster.data.model.ProductConflict
 import kotlinx.coroutines.flow.Flow
+import com.example.inventorymaster.data.entity.SessionWithProgress
 
 interface InventoryRepository {
     // Session 相关
     fun getAllSessions(): Flow<List<InventorySession>>
+    fun getAllSessionsWithProgress(): Flow<List<SessionWithProgress>>
     suspend fun createSession(name: String)
     suspend fun updateSessionStatus(sessionId: Long, status: Int)
     suspend fun deleteSession(session: InventorySession)
@@ -64,6 +66,8 @@ interface InventoryRepository {
     suspend fun fetchCloudSessions(ip: String): Result<List<SessionDto>>
 
     fun saveServerIp(ip: String)
+
+    fun getServerIp(): String
 
 
 }

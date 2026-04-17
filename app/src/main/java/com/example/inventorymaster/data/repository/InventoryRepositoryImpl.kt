@@ -13,6 +13,7 @@ import com.example.inventorymaster.data.dto.SyncData
 import com.example.inventorymaster.data.dto.toDto
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.entity.ProductBase
+import com.example.inventorymaster.data.entity.SessionWithProgress
 import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
 import com.example.inventorymaster.data.model.ConflictAction
@@ -30,6 +31,9 @@ class InventoryRepositoryImpl(
 
     // --- Session ---
     override fun getAllSessions() = sessionDao.getAllSessions()
+    override fun getAllSessionsWithProgress(): Flow<List<SessionWithProgress>> {
+        return sessionDao.getAllSessionsWithProgress()
+    }
     override suspend fun createSession(name: String) { sessionDao.insertSession(
         InventorySession(
             name = name,
@@ -222,6 +226,11 @@ class InventoryRepositoryImpl(
     override fun saveServerIp(ip: String) {
         prefs.edit { putString("server_ip", ip) }
     }
+
+    override fun getServerIp(): String {
+        // 从 SharedPreferences 取出，如果没有存过，默认返回空字符串
+        return prefs.getString("server_ip", "") ?: ""
+    }
     // 全量上传
     override suspend fun exportFullSession(ip: String, sessionId: Long): Result<String> {
         return try {
@@ -364,7 +373,12 @@ class InventoryRepositoryImpl(
     override suspend fun exportdownloadFromPC(ip: String, sessionId: Long): Result<String> {
         return try {
             val api = InventoryApiService.Companion.create(ip)
-            val response = api.downloadData(sessionId)
+            val localSession = sessionDao.getSessionById(sessionId)
+                ?: return Result.failure(Exception("本地任务不存在"))
+            val currentUuid = localSession.uuid
+
+            // 🌟 修复 2：将请求参数改为 UUID (而不是本地的 sessionId)
+            val response = api.downloadData(currentUuid)
 
             if (!response.isSuccessful || response.body() == null) {
                 return Result.failure(Exception("下载失败: ${response.code()}"))
@@ -375,7 +389,7 @@ class InventoryRepositoryImpl(
             // 1. 保存/更新 Session (核心修复)
             // 直接使用服务器传回来的完美数据
             val serverSession = data.session
-            val localSession = sessionDao.getSessionByUuid(serverSession.uuid)
+//            val localSession = sessionDao.getSessionByUuid(serverSession.uuid)
 
             val finalLocalId: Long
 

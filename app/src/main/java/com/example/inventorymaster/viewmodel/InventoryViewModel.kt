@@ -1,14 +1,13 @@
 package com.example.inventorymaster.viewmodel
 
 import android.content.Context
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.example.inventorymaster.InventoryApplication
+import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
@@ -16,6 +15,7 @@ import com.example.inventorymaster.data.model.ConflictAction
 import com.example.inventorymaster.data.model.ProductConflict
 import com.example.inventorymaster.data.repository.InventoryRepository
 import com.example.inventorymaster.utils.BatchCodeProcessor
+import com.example.inventorymaster.utils.ExcelUtils
 import com.example.inventorymaster.utils.Gs1Parser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,8 +26,6 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import android.net.Uri
-import com.example.inventorymaster.utils.ExcelUtils
 
 
 // 1. 定义 UI 状态
@@ -40,83 +38,35 @@ data class InventoryUiState(
     val conflictList: List<ProductConflict> = emptyList(),
     val isAnalyzing: Boolean = false,
     val userMessage: String? = null,
-    val isBatchProcessorEnabled: Boolean = false
+    val isBatchProcessorEnabled: Boolean = false,
+    val autoPushSessionId: Long? = null,
+    // 👇 新增：DI 校验状态和错误列表
+    val isDiValidationEnabled: Boolean = false, // 开关状态
+    val invalidDiList: List<StockRecordCombined> = emptyList() // 校验失败的清单，只要不为空，UI就弹窗
 )
 
-class InventoryViewModel(private val repository: InventoryRepository) : ViewModel() {
+
+class InventoryViewModel(private val repository: InventoryRepository, private val settingsRepository: SettingsRepository) : ViewModel() {
 
     private val _uiState = MutableStateFlow(InventoryUiState())
     private var pendingExcelProducts: List<ProductBase> = emptyList()
     private var pendingExcelRecords: List<StockRecord> = emptyList()
     val uiState: StateFlow<InventoryUiState> = _uiState.asStateFlow()
-
-    // 🔥 新增：同步状态 (用于控制 UI 上的 loading 转圈或提示)
-    // 状态含义: false=空闲, true=正在同步中
-    private val _isSyncing = MutableStateFlow(false)
-    val isSyncing: StateFlow<Boolean> = _isSyncing
-
-    // 🔥 新增：同步结果消息 (用于弹 Toast，比如 "同步成功" 或 "网络错误")
-    private val _syncMessage = MutableStateFlow<String?>(null)
-    val syncMessage: StateFlow<String?> = _syncMessage
-
-    // 🔒 真正的同步锁（不是 UI 状态）
-    private var isSyncRunning = false
-
-    // 📨 同步期间是否又收到新触发
-    private var hasPendingSync = false
-    // ==========================================
-    // 🟢 动作 A: 增量下载 (Pull)
-    // 建议在 init {} 块中或者 Activity 的 onResume 调用它
-    private fun refreshDataPull(sessionId: Long) {
-        if (isSyncRunning) {
-            hasPendingSync = true
-            return
-        }
-        isSyncRunning = true
-        hasPendingSync = false
-        _isSyncing.value = true   // UI loading
+    // 👇 新增 1：初始化时监听 DataStore
+    init {
         viewModelScope.launch {
-            do {
-                val result = withContext(Dispatchers.IO) {
-                    repository.pullNewData(sessionId)
-                }
-
-                if (result.isFailure) {
-                    _syncMessage.value = "同步失败: ${result.exceptionOrNull()?.message}"
-                    break
-                }
-
-            } while (hasPendingSync)
-
-            isSyncRunning = false
-            _isSyncing.value = false
-        }
-    }
-
-    fun refreshData (sessionId: Long) {
-        refreshDataPull(sessionId)
-    }
-
-    // 🔴 动作 B: 增量上传 (Push)
-    // ==========================================
-    // 建议在 saveRecord / scanBarcode 等修改数据库的方法 *之后* 调用
-    //private
-    fun triggerPush(sessionId: Long) {
-        viewModelScope.launch {
-            // 注意：上传通常是静默的，不需要让 _isSyncing 转圈，以免打扰用户操作
-            // 除非你希望用户看着它传完
-            val result = withContext(Dispatchers.IO) {
-                repository.pushUnsyncedData(sessionId)
-            }
-
-            if (result.isFailure) {
-                // 这里可以选择不打扰用户，或者显示一个小感叹号
-                println("Push failed: ${result.exceptionOrNull()?.message}")
-            } else {
-                println("Push success")
+            settingsRepository.settingsFlow.collect { settings ->
+                _uiState.value = _uiState.value.copy(isDiValidationEnabled = settings.enableDiValidation)
             }
         }
     }
+    // 👇 新增 2：供 UI 调用的开关切换方法
+    fun toggleDiValidation(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateDiValidation(enabled)
+        }
+    }
+
 
     fun toggleBatchProcessor(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(isBatchProcessorEnabled = enabled)
@@ -128,15 +78,6 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
             performSearch(currentQuery, isInventoryMode = true) // 这里的参数根据你的实际情况传
         }
     }
-
-    var isGlobalLoading by mutableStateOf(false)
-        private set
-    var lastServerIp by mutableStateOf("")
-        private set
-    fun updateServerIp(ip: String) {
-        lastServerIp = ip
-    }
-
 
 
     // --- 核心搜索逻辑 ---
@@ -243,7 +184,7 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
                 // 如果 prepareRecordForSync 里有特殊备注逻辑，可以在这里把 remarks = ... 加上
             )
             repository.updateRecord(recordToSave)
-            triggerPush(record.sessionId)
+            _uiState.value = _uiState.value.copy(autoPushSessionId = record.sessionId)
             val currentQuery = _uiState.value.searchQuery
             performSearch(currentQuery, isInventoryMode = false)
 
@@ -267,29 +208,22 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
     fun quickCheck(combined: StockRecordCombined) {
         viewModelScope.launch {
             val record = combined.record
-
             // 1. 业务逻辑：修改备注和实际数量
-            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-            val time = sdf.format(Date())
-            val appendText = "已查验, $time"
-            val newRemarks = if (record.remarks.isNullOrBlank()) appendText else "${record.remarks}, $appendText"
+            val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(record.lastUpdateTime)
+            val appendText = "已查验[$time]${record.operator};"
+            val newRemarks = if (record.remarks.isNullOrBlank()) appendText else "$appendText ${record.remarks} "
 
             // 构造业务变更后的对象
             val businessUpdatedRecord = record.copy(
-                actualQuantity = record.quantity,
+                actualQuantity = record.quantity, //自动填充同步字段
                 remarks = newRemarks,
                 syncStatus = 1,                   // 🚩 标记脏数据
-                lastUpdateTime = System.currentTimeMillis()
+                lastUpdateTime = record.lastUpdateTime
             )
-
-            // 2. 🔥 自动填充同步字段
-            // val finalRecord = prepareRecordForSync(businessUpdatedRecord, "快速查验: 数量=${businessUpdatedRecord.quantity}")
-
             // 3. 保存
             repository.updateRecord(businessUpdatedRecord)
             //立即触发上传
-            triggerPush(record.sessionId)
-
+            _uiState.value = _uiState.value.copy(autoPushSessionId = record.sessionId)
             // 4. 原地刷新 UI
             val currentList = _uiState.value.searchResults
             val newList = currentList.map {
@@ -301,6 +235,10 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
             }
             _uiState.value = _uiState.value.copy(searchResults = newList)
         }
+    }
+
+    fun clearAutoPushSignal() {
+        _uiState.value = _uiState.value.copy(autoPushSessionId = null)
     }
 
     // =========================================================================
@@ -320,8 +258,6 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
 //    }
     //endregion
 
-    // InventoryViewModel.kt
-
     // 导入逻辑
     fun importExcelFile(context: Context, uri: Uri, sessionId: Long) {
         // 开启一个协程，指定在 IO 线程运行
@@ -329,6 +265,7 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
             try {
                 // 1. 设置加载状态 (UI层可以观察这个状态来显示转圈圈)
                 // _uiState.update { it.copy(isLoading = true) }
+                val isValidationEnabled = _uiState.value.isDiValidationEnabled
 
                 // 2. 解析 (耗时操作)
                 val result = ExcelUtils.parseExcel(context, uri, sessionId)
@@ -341,6 +278,13 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
 
                 // 5. 提示成功 (如果要弹 Toast，建议用 SharedFlow 发送事件给 UI，或者简单点直接在 UI 回调里做)
                 // 这里的处理稍微复杂一点，简单的做法看下面 UI 层的改动
+                if (result.invalidItems.isNotEmpty()) {
+                    _uiState.value = _uiState.value.copy(invalidDiList = result.invalidItems)
+                } else if (isValidationEnabled) {
+                    _uiState.value = _uiState.value.copy(userMessage = "导入成功，所有 DI 校验通过！")
+                } else {
+                    _uiState.value = _uiState.value.copy(userMessage = "导入成功")
+                }
 
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -381,7 +325,19 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
     }
 
     fun selectSession(sessionId: Long) {
-        _uiState.value = _uiState.value.copy(currentSessionId = sessionId)
+        _uiState.value = _uiState.value.copy(
+            currentSessionId = sessionId,
+            searchResults = emptyList(),
+            searchQuery = ""
+        )
+    }
+
+    // 新增：清空搜索结果的通用方法
+    fun clearSearchResults() {
+        _uiState.value = _uiState.value.copy(
+            searchResults = emptyList(),
+            searchQuery = ""
+        )
     }
 
     fun onQueryChange(newQuery: String) {
@@ -397,7 +353,7 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
                 val application = (extras[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as InventoryApplication)
-                return InventoryViewModel(application.repository) as T
+                return InventoryViewModel(application.repository,com.example.inventorymaster.data.SettingsRepository(application)) as T
             }
         }
     }
@@ -492,51 +448,27 @@ class InventoryViewModel(private val repository: InventoryRepository) : ViewMode
         pendingExcelRecords = emptyList()
     }
 
-    // 上传功能 (预留)
-    fun uploadDataToServer(ip: String) {
-        val sessionId = _uiState.value.currentSessionId ?: return
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true)
-            val result = repository.exportFullSession(ip, sessionId)
-            if (result.isSuccess) {
-                repository.saveServerIp(ip)
-                updateServerIp(ip)
-            }
-            _uiState.value = _uiState.value.copy(isLoading = false,
-                userMessage = if (result.isSuccess) result.getOrNull() else "上传失败: ${result.exceptionOrNull()?.message}")
-        }
-    }
-
-    // 下载数据
-    fun downloadDataFromPC(ip: String, targetSessionId: Long) {
-        viewModelScope.launch {
-            isGlobalLoading = true
-            if (!com.example.inventorymaster.utils.NetworkUtils.isValidIpAddress(ip)) {
-                _uiState.value = _uiState.value.copy(userMessage = "IP 地址格式错误")
-                isGlobalLoading = false
-                return@launch
-            }
-            _uiState.value = _uiState.value.copy(isLoading = true)
-            val result = repository.exportdownloadFromPC(ip, targetSessionId)
-            if (result.isSuccess) {
-                repository.saveServerIp(ip)
-                updateServerIp(ip)
-            }
-            _uiState.value = _uiState.value.copy(
-                isLoading = false,
-                userMessage = if (result.isSuccess) result.getOrNull() else "下载失败: ${result.exceptionOrNull()?.message}"
-            )
-            if (result.isSuccess) {
-                updateServerIp(ip)
-                _uiState.value = _uiState.value.copy(userMessage = "加入成功！")
+    // 👇 新增：手动校验当前列表的所有 DI
+    fun validateCurrentTaskDIs() {
+        val currentData = _uiState.value.searchResults
+        val invalidList = currentData.filter { item ->
+            val di = item.record.di
+            if (di.isBlank()) {
+                false // 跳过空 DI
             } else {
-                _uiState.value = _uiState.value.copy(
-                    userMessage = "连接失败: ${result.exceptionOrNull()?.message}"
-                )
+                !Gs1Parser.isValidDI(di) // 不合法的挑出来
             }
-            isGlobalLoading = false
+        }
+
+        if (invalidList.isNotEmpty()) {
+            _uiState.value = _uiState.value.copy(invalidDiList = invalidList)
+        } else {
+            _uiState.value = _uiState.value.copy(userMessage = "当前任务非空 DI 均校验通过！")
         }
     }
 
-
+    // 👇 新增：关闭警告弹窗并清空错误列表
+    fun clearInvalidDiList() {
+        _uiState.value = _uiState.value.copy(invalidDiList = emptyList())
+    }
 }

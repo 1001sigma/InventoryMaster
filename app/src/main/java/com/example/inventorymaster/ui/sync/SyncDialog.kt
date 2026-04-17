@@ -30,11 +30,9 @@ import androidx.compose.ui.unit.dp
 fun SyncDialog(
     onDismiss: () -> Unit,
     onUpload: (String) -> Unit, // 上传回调 (IP)
-    onDownload: (String, String) -> Unit // 下载回调 (IP, SessionID)
+    onDownload: (String) -> Unit // 下载回调 (IP)
 ) {
     var ip by remember { mutableStateOf("192.168.") }
-    var sessionIdInput by remember { mutableStateOf("") }
-
     // 0 = 上传模式, 1 = 下载模式
     var selectedTab by remember { mutableStateOf(0) }
 
@@ -83,18 +81,8 @@ fun SyncDialog(
                         color = MaterialTheme.colorScheme.secondary
                     )
                 } else {
-                    // --- 下载模式 ---
-                    OutlinedTextField(
-                        value = sessionIdInput,
-                        onValueChange = { sessionIdInput = it },
-                        label = { Text("目标任务 ID (SessionID)") },
-                        placeholder = { Text("电脑网页显示的 ID") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth()
-                    )
                     Text(
-                        "⚠️ 注意：将覆盖本地相同 Session 的数据。",
+                        "⚠️ 注意：将覆盖本地任务的数据。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -107,11 +95,11 @@ fun SyncDialog(
                     if (selectedTab == 0) {
                         onUpload(ip)
                     } else {
-                        onDownload(ip, sessionIdInput)
+                        onDownload(ip)
                     }
                 },
                 // 简单的非空校验
-                enabled = ip.length > 8 && (selectedTab == 0 || sessionIdInput.isNotEmpty())
+                enabled = ip.length > 8
             ) {
                 Text(if (selectedTab == 0) "开始上传" else "开始下载")
             }

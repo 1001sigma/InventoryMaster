@@ -1,9 +1,10 @@
-package com.example.inventorymaster.ui
+package com.example.inventorymaster.ui.analyzer
 
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.os.Process
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -61,6 +62,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -88,26 +90,22 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.UserSettings
-import com.example.inventorymaster.ui.analyzer.BarcodeAnalyzer
-import com.example.inventorymaster.ui.analyzer.DetectedBarcode
-import com.example.inventorymaster.ui.analyzer.TextAnalyzer
 import com.example.inventorymaster.utils.JiebaUtils
 import com.example.inventorymaster.utils.RecognitionUtils
 import com.google.mlkit.vision.text.Text
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-
-
-
 
 @OptIn(ExperimentalGetImage::class)
 @Composable
@@ -116,7 +114,7 @@ fun ScanScreen(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
     // --- 1. 设置读取 ---
@@ -468,7 +466,7 @@ fun SettingsDialog(
                     supportingContent = { Text("同屏出现多个码时，手动点击选择") },
                     leadingContent = { Icon(Icons.Default.QrCodeScanner, null) },
                     trailingContent = {
-                        androidx.compose.material3.Switch(
+                        Switch(
                             checked = enableMultiScan,
                             onCheckedChange = onToggleMultiScan
                         )
@@ -487,7 +485,7 @@ fun SettingsDialog(
                     supportingContent = { Text("识字模式下显示半透明遮罩") },
                     leadingContent = { Icon(Icons.Default.CropFree, null) }, // 需要导入 Icons.Default.CropFree 或其他
                     trailingContent = {
-                        androidx.compose.material3.Switch(
+                        Switch(
                             checked = showOcrMask,
                             onCheckedChange = onToggleOcrMask
                         )
@@ -499,7 +497,7 @@ fun SettingsDialog(
                     supportingContent = { Text("仅按空格和标点切分，不使用词典") },
                     leadingContent = { Icon(Icons.Default.ContentCut, null) }, // 如果没有 ContentCut 图标，可以用 Edit 之类的
                     trailingContent = {
-                        androidx.compose.material3.Switch(
+                        Switch(
                             checked = isSimpleMode,
                             onCheckedChange = onToggleSimpleMode // 绑定回调
                         )
@@ -538,7 +536,7 @@ fun restartApp(context: Context) {
     val mainIntent = Intent.makeRestartActivityTask(componentName)
     context.startActivity(mainIntent)
     // 杀掉当前进程，确保彻底重启
-    android.os.Process.killProcess(android.os.Process.myPid())
+    Process.killProcess(Process.myPid())
 }
 
 //扫码页面
@@ -770,7 +768,7 @@ fun OCRResultDialog(
                     value = editedText,
                     onValueChange = { editedText = it },
                     modifier = Modifier.fillMaxWidth().height(200.dp),
-                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp)
+                    textStyle = TextStyle(fontSize = 14.sp)
                 )
             }
         },

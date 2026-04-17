@@ -2,12 +2,15 @@ package com.example.inventorymaster.utils
 
 import android.content.Context
 import android.net.Uri
-import androidx.compose.material.icons.Icons
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
 import com.google.gson.Gson
-import org.apache.poi.ss.usermodel.*
+import org.apache.poi.ss.usermodel.Cell
+import org.apache.poi.ss.usermodel.CellType
+import org.apache.poi.ss.usermodel.HorizontalAlignment
+import org.apache.poi.ss.usermodel.VerticalAlignment
+import org.apache.poi.ss.usermodel.WorkbookFactory
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.InputStream
 import java.io.OutputStream
@@ -66,7 +69,8 @@ object ExcelUtils {
     data class ImportResult(
         val products: List<ProductBase>, // 字典数据
         val records: List<StockRecord>,  // 账本数据
-        val schema: TableSchema          // <--- 新增：表格格式定义
+        val schema: TableSchema,          // <--- 新增：表格格式定义
+        val invalidItems: List<StockRecordCombined> = emptyList()// 专门存放 DI 校验失败的数据集合，默认给个空列表防空指针
     )
 
     // ---  扩充关键词字典 (支持 NMPA 标准字段) ---
@@ -88,9 +92,15 @@ object ExcelUtils {
     private val KEYWORDS_LOC = listOf("库位", "位置","仓库名称", "location", "loc")
     private val KEYWORDS_MEMO = listOf("备注", "说明", "remarks", "comment", "note", "memo")
     // --- 3. 核心导入方法 (升级版) ---
-    fun parseExcel(context: Context, uri: Uri, sessionId: Long): ImportResult {
+    fun parseExcel(
+        context: Context,
+        uri: Uri,
+        sessionId: Long,
+        isDiValidationEnabled: Boolean = false
+    ): ImportResult {
         val products = mutableListOf<ProductBase>()
         val records = mutableListOf<StockRecord>()
+        val invalidItems = mutableListOf<StockRecordCombined>()
         var inputStream: InputStream? = null
 
         try {
@@ -227,11 +237,21 @@ object ExcelUtils {
                     sourceType = 1 // Excel导入
                 )
                 records.add(record)
+                // 👇 新增：核心的 DI 校验拦截逻辑
+                // 只有当开关开启，并且这一行确实填了 DI (rawDi) 的时候，才进行校验。
+                // 如果只填了物料编码没填 DI，产生的 findDi 是内部生成的，不需要走 GS1 校验。
+                if (isDiValidationEnabled && rawDi.isNotBlank()) {
+                    // 调用第一步在 Gs1Parser 里写好的校验方法
+                    if (!Gs1Parser.isValidDI(rawDi)) {
+                        // 校验不通过！把当前的 record 和 product 包装起来塞进异常列表
+                        invalidItems.add(StockRecordCombined(record, product))
+                    }
+                }
             }
             workbook.close()
 
             // 返回结果：携带了 schema
-            return ImportResult(products, records, tableSchema)
+            return ImportResult(products, records, tableSchema,  invalidItems)
 
         } catch (e: Exception) {
             e.printStackTrace()
@@ -314,7 +334,7 @@ object ExcelUtils {
             if (col.width > 0) {
                 sheet.setColumnWidth(col.columnIndex, col.width)
             } else {
-                sheet.setDefaultColumnWidth(15)
+                sheet.defaultColumnWidth = 15
             }
         }
         // ==========================================

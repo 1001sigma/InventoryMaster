@@ -104,4 +104,5 @@ dependencies {
     implementation ("com.huaban:jieba-analysis:1.0.2")
     // DataStore Preferences
     implementation("androidx.datastore:datastore-preferences:1.2.0")
+
 }

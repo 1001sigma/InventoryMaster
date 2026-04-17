@@ -1,7 +1,6 @@
 package com.example.inventorymaster.utils
 
 object BatchCodeProcessor {
-
     /**长光批号提取
      * 处理逻辑：
      * 输入：065006200810024022612

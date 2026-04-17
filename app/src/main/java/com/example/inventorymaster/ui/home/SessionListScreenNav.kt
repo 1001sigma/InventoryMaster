@@ -7,8 +7,10 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -25,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cloud
@@ -60,6 +64,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -68,12 +73,15 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.inventorymaster.data.entity.InventorySession
-import com.example.inventorymaster.ui.ScanScreen
+import com.example.inventorymaster.data.entity.SessionWithProgress
+import com.example.inventorymaster.ui.analyzer.ScanScreen
 import com.example.inventorymaster.ui.session.CloudTaskDialog
 import com.example.inventorymaster.utils.NetworkUtils
 import com.example.inventorymaster.utils.QRCodeUtil
 import com.example.inventorymaster.viewmodel.InventoryViewModel
 import com.example.inventorymaster.viewmodel.SessionViewModel
+import com.example.inventorymaster.viewmodel.SyncIntent
+import com.example.inventorymaster.viewmodel.SyncViewModel
 import java.text.SimpleDateFormat
 import java.time.LocalDate
 import java.util.Date
@@ -85,10 +93,12 @@ import java.util.Locale
 fun SessionListScreen(
     sessionViewModel: SessionViewModel,
     inventoryViewModel: InventoryViewModel,
+    syncViewModel: SyncViewModel,
     onSessionClick: (Long) -> Unit
 ) {
     val sessionState by sessionViewModel.uiState.collectAsState()
     val inventoryState by inventoryViewModel.uiState.collectAsState()
+    val syncState by syncViewModel.uiState.collectAsState()
 
     val context = LocalContext.current
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -106,8 +116,8 @@ fun SessionListScreen(
     var showQRCodeSessionId by remember { mutableStateOf<Long?>(null) } // 二维码弹窗开关
     var showManualIpDialog by remember { mutableStateOf<Long?>(null) } // 手动输IP弹窗开关 (存目标ID)
     // 2. 监听 ViewModel 数据
-    val lastIp = inventoryViewModel.lastServerIp
-    val isLoading = inventoryViewModel.isGlobalLoading
+    val lastIp = syncState.lastServerIp
+    val isLoading = syncState.isSyncing
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -143,9 +153,10 @@ fun SessionListScreen(
                 ), // 底部留出空间给 FAB
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(sessionState.sessions, key = { it.id }) { session ->
+                items(sessionState.sessions, key = { it.session.id }) { item ->
+                    val session = item.session
                     SessionItem(
-                        session = session,
+                        item = item,
                         onClick = { onSessionClick(session.id) },
                         onLongClick = {
                             selectedSession = session
@@ -310,7 +321,7 @@ fun SessionListScreen(
             },
             onJoinTask = { ip, sessionId ->
                 // 点击加入：调用下载逻辑
-                inventoryViewModel.downloadDataFromPC(ip, sessionId)
+                syncViewModel.handleIntent(SyncIntent.DownloadFromPC(ip,sessionId))
                 showCloudHall = false
             }
         )
@@ -359,7 +370,7 @@ fun SessionListScreen(
             onDismiss = { showManualIpDialog = null },
             onConfirm = { ip ->
                 showManualIpDialog = null
-                inventoryViewModel.downloadDataFromPC(ip, targetId)
+                syncViewModel.handleIntent(SyncIntent.DownloadFromPC(ip, targetId ))
             }
         )
     }
@@ -382,7 +393,7 @@ fun SessionListScreen(
 
                         if (NetworkUtils.isValidIpAddress(ip)) {
                             // 校验通过，直接下载
-                            inventoryViewModel.downloadDataFromPC(ip, id)
+                            syncViewModel.handleIntent(SyncIntent.DownloadFromPC(ip, id))
                         } else {
                             Toast.makeText(context, "二维码中的 IP 格式无效", Toast.LENGTH_LONG)
                                 .show()
@@ -411,11 +422,12 @@ fun SessionListScreen(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SessionItem(
-    session: InventorySession,
+    item: SessionWithProgress,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onShowQRCode: (Long) -> Unit
 ) {
+    val session = item.session
     val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     val statusColor = when (session.status) {
         0 -> Color(0xFF4CAF50) // 绿: 进行中
@@ -434,63 +446,111 @@ fun SessionItem(
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .padding(vertical = 4.dp, horizontal = 8.dp)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
             ),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, Color(0xFFF0F0F0)),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = session.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = sdf.format(Date(session.date)),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray
-                )
-            }
+        Box(modifier = Modifier.fillMaxWidth()) {
 
-            IconButton(onClick = {
-                // 这里的 onClick 需要回调给上层，告诉它“我要展示 ID 为 xx 的二维码”
-                onShowQRCode(session.id)
-            }) {
-                Icon(Icons.Default.QrCode, contentDescription = "分享任务")
-            }
-            // 状态标签
-            Surface(
-                color = statusColor.copy(alpha = 0.1f),
-                shape = MaterialTheme.shapes.small
-            ) {
-                Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-                    if (session.status == 2) {
-                        Icon(
-                            Icons.Default.Lock,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .size(16.dp)
-                                .align(Alignment.CenterVertically),
-                            tint = statusColor
+            // 1. 进度条背景层 (从左向右的铺满效果)
+            if (item.totalCount > 0) {
+                // 外层 Box 负责获取准确的、和 Row 一样大的卡片尺寸
+                Box(modifier = Modifier
+                    .matchParentSize()
+                    .fillMaxWidth(item.progress)
+                    .background(
+                        // 使用水平渐变模拟玻璃的光泽感
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(
+                                statusColor.copy(alpha = 0.15f), // 起始稍深
+                                statusColor.copy(alpha = 0.08f)  // 结束稍浅
+                            )
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-                    Text(
-                        text = statusText,
-                        color = statusColor,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold
+                    )
+                ) {
+                    // 内层 Box 负责按比例渲染颜色
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight() // 高度 100% 填满卡片
+                            .fillMaxWidth(item.progress) // 宽度根据进度百分比决定
+                            .background(statusColor.copy(alpha = 0.2f)) // 浅色背景
                     )
                 }
             }
-        }
 
+            // 2. 原来的 Row 内容层 (悬浮在进度背景上方)
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = session.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = sdf.format(Date(session.date)),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+
+                    // 显示具体的进度数字和百分比文本
+                    if (item.totalCount > 0) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "进度: ${item.verifiedCount} / ${item.totalCount}  (${item.percentageText})",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = statusColor // 文字颜色跟随任务状态
+                        )
+                    } else {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "暂无库存数据",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                IconButton(onClick = { onShowQRCode(session.id) }) {
+                    Icon(Icons.Default.QrCode, contentDescription = "分享任务")
+                }
+
+                // 状态标签
+                Surface(
+                    color = statusColor.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                        if (session.status == 2) {
+                            Icon(
+                                Icons.Default.Lock,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .align(Alignment.CenterVertically),
+                                tint = statusColor
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = statusText,
+                            color = statusColor,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
