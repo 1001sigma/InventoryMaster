@@ -8,9 +8,12 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.example.inventorymaster.InventoryApplication
 import com.example.inventorymaster.data.SettingsRepository
+import com.example.inventorymaster.data.entity.ExpiryState
+import com.example.inventorymaster.data.entity.HighlightField
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
 import com.example.inventorymaster.data.entity.StockRecordCombined
+import com.example.inventorymaster.data.entity.StockRecordUiModel
 import com.example.inventorymaster.data.model.ConflictAction
 import com.example.inventorymaster.data.model.ProductConflict
 import com.example.inventorymaster.data.repository.InventoryRepository
@@ -26,11 +29,14 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 
 // 1. 定义 UI 状态
 data class InventoryUiState(
-    val searchResults: List<StockRecordCombined> = emptyList(),
+    val searchResults: List<StockRecordUiModel> = emptyList(),
     val currentSessionId: Long? = null,
     val isLoading: Boolean = false,
     val searchQuery: String = "",
@@ -51,6 +57,9 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
     private val _uiState = MutableStateFlow(InventoryUiState())
     private var pendingExcelProducts: List<ProductBase> = emptyList()
     private var pendingExcelRecords: List<StockRecord> = emptyList()
+    private val _searchQuery = MutableStateFlow("")
+    // 1. 在 ViewModel 顶部新增一个 StateFlow 来保存当前的搜索关键字
+    val searchQuery = _searchQuery.asStateFlow()
     val uiState: StateFlow<InventoryUiState> = _uiState.asStateFlow()
     // 👇 新增 1：初始化时监听 DataStore
     init {
@@ -116,8 +125,9 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
                     repository.searchRecords(sessionId, cleanQuery)
                 }
 
+                val uiList = mapToUiModels(results, query)
                 _uiState.value = _uiState.value.copy(
-                    searchResults = results,
+                    searchResults = uiList,
                     isLoading = false
                 )
             } catch (e: Exception) {
@@ -130,6 +140,72 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
     // =========================================================================
     // 🔥 [核心修改区域] 增删改查 (自动填充同步字段)
     // =========================================================================
+    // 在 ViewModel 中添加这个私有函数
+    private fun mapToUiModels(
+        dbResults: List<StockRecordCombined>,
+        query: String
+    ): List<StockRecordUiModel> {
+        val today = LocalDate.now()
+        // 假设你的 Long 型日期存的是类似 20251231 格式，如果是 YYMMDD (如 251231)，请将 pattern 改为 "yyMMdd"
+        val dateFormatter = DateTimeFormatter.ofPattern("yyMMdd")
+
+        return dbResults.map { combined ->
+            val record = combined.record
+            val product = combined.product
+
+            // 1. 判断哪个字段该高亮 (忽略大小写)
+            val highlight = when {
+                query.isBlank() -> HighlightField.NONE
+                product?.productName?.contains(query, ignoreCase = true) == true -> HighlightField.PRODUCT_NAME
+                record.batchNumber.contains(query, ignoreCase = true) -> HighlightField.BATCH_NUMBER
+                record.di.contains(query, ignoreCase = true) -> HighlightField.DI
+                record.location.contains(query, ignoreCase = true) -> HighlightField.LOCATION
+                else -> HighlightField.NONE
+            }
+
+            // 2. 计算效期状态
+            var expiryState = ExpiryState.NORMAL
+            try {
+                val expiryStr = record.expiryDate.toString()
+
+                // 确保效期格式正确才能计算
+                if (expiryStr.length == 8) {
+                    val expiryDateObj = LocalDate.parse(expiryStr, dateFormatter)
+                    // 剩余天数 = 效期 - 今天
+                    val remainingDays = ChronoUnit.DAYS.between(today, expiryDateObj)
+
+                    // 如果有生产日期，计算总效期天数
+                    val prodStr = record.productionDate?.toString()
+                    val totalDays = if (!prodStr.isNullOrEmpty() && prodStr.length == 8) {
+                        val prodDateObj = LocalDate.parse(prodStr, dateFormatter)
+                        ChronoUnit.DAYS.between(prodDateObj, expiryDateObj)
+                    } else {
+                        null
+                    }
+
+                    // 近效期规则判断
+                    val isNearExpiryByDays = remainingDays in 0..30
+                    // 规则a：剩余时间 < 总有效时间的 25% (必须有总天数且大于0才能按比例算)
+                    val isNearExpiryByRatio = totalDays != null && totalDays > 0 && remainingDays < (totalDays * 0.25)
+
+                    expiryState = when {
+                        remainingDays < 0 -> ExpiryState.EXPIRED // 已经过期
+                        isNearExpiryByDays || isNearExpiryByRatio -> ExpiryState.NEAR_EXPIRY // 满足任意近效期条件
+                        else -> ExpiryState.NORMAL
+                    }
+                }
+            } catch (e: Exception) {
+                // 解析失败（比如初始值为0）则默认为正常，防止崩溃
+            }
+
+            // 组装并返回
+            StockRecordUiModel(
+                combined = combined,
+                highlightField = highlight,
+                expiryState = expiryState
+            )
+        }
+    }
 
     /**
      * 自动填充同步字段 (装饰器模式)
@@ -226,11 +302,15 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
             _uiState.value = _uiState.value.copy(autoPushSessionId = record.sessionId)
             // 4. 原地刷新 UI
             val currentList = _uiState.value.searchResults
-            val newList = currentList.map {
-                if (it.record.id == record.id) {
-                    it.copy(record = businessUpdatedRecord)
+            val newList = currentList.map { uiModel ->
+                // 从 uiModel 中取出底层的 combined 进行比对
+                if (uiModel.combined.record.id == record.id) {
+                    // 先更新里层的 combined
+                    val updatedCombined = uiModel.combined.copy(record = businessUpdatedRecord)
+                    // 再更新外层的 uiModel
+                    uiModel.copy(combined = updatedCombined)
                 } else {
-                    it
+                    uiModel
                 }
             }
             _uiState.value = _uiState.value.copy(searchResults = newList)
@@ -451,7 +531,7 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
     // 👇 新增：手动校验当前列表的所有 DI
     fun validateCurrentTaskDIs() {
         val currentData = _uiState.value.searchResults
-        val invalidList = currentData.filter { item ->
+        val invalidList = currentData.map { it.combined }.filter { item ->
             val di = item.record.di
             if (di.isBlank()) {
                 false // 跳过空 DI

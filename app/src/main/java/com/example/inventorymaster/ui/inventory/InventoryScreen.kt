@@ -102,6 +102,9 @@ import java.util.Locale
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import com.example.inventorymaster.data.entity.ExpiryState
+import com.example.inventorymaster.data.entity.HighlightField
+import com.example.inventorymaster.data.entity.StockRecordUiModel
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -522,8 +525,9 @@ fun InventoryScreen(
                     ) { // 4. 结果列表区域
                         LazyColumn(modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(bottom = 100.dp)) {
-                            items(items = inventoryStateUI.searchResults, key = { it.record.id }) { combined ->
+                            items(items = inventoryStateUI.searchResults, key = { it.combined.record.id }) { uiModel ->
                                 // 判断是否已查验 (备注里包含 "已查验")
+                                val combined = uiModel.combined
                                 val record = combined.record
                                 val isChecked = record.remarks?.contains("已查验") == true
                                 val actionWidth = 84.dp
@@ -579,7 +583,7 @@ fun InventoryScreen(
                                         // 使用 weight(1f)，当右边没有东西时，它会自动占满 100% 宽度
                                         Box(modifier = Modifier.weight(1f)) {
                                             // 这里引用刚才修改过的、没有 Card 包裹的 StockRecordItem
-                                            StockRecordItem(combined = combined)
+                                            StockRecordItem(uiModel=uiModel)
                                         }
                                         // === 右边：查验按钮 (条件显示) ===
                                         if (isInventoryMode && isQuickCheckMode && !isReadOnly) {
@@ -860,134 +864,303 @@ fun SearchBarArea(
 }
 
 // --- 子组件：单条库存记录卡片 ---
+//@Composable
+//fun StockRecordItem(combined: StockRecordCombined) {
+//    val record = combined.record
+//    val product = combined.product
+//    val bookQty = record.quantity
+//    val actQty = record.actualQuantity
+//    val isVerified = actQty != null
+//    val isError = isVerified && (actQty != bookQty)
+//    // 定义状态颜色
+//    val statusColor = when {
+//        !isVerified -> Color(0xFF1F97F4) // 待盘点：蓝色系
+//        isError -> MaterialTheme.colorScheme.error       // 有差异：红色系
+//        else -> Color(0xFF4CAF50)                        // 正常：绿色
+//    }
+//
+//    Column(modifier = Modifier.padding(16.dp)) {
+//        // === 第一行：UDI 和 数量 ===
+//        Row(
+//            modifier = Modifier.fillMaxWidth(),
+//            horizontalArrangement = Arrangement.SpaceBetween,
+//            verticalAlignment = Alignment.Top // 建议加上顶部对齐
+//        ) {
+//            Column(modifier = Modifier.weight(1f)) {
+//                // 显示产品名
+//                Text(
+//                    text = product?.productName ?: "未录入产品 (${record.di})",
+//                    style = MaterialTheme.typography.titleMedium,
+//                    fontWeight = FontWeight.Bold,
+//                    maxLines = 1,
+//                    overflow = TextOverflow.Ellipsis,
+//                    modifier = Modifier.width(250.dp)
+//                )
+//                // 显示规格/型号
+//                if (product != null) {
+//                    Row(verticalAlignment = Alignment.CenterVertically) {
+//                        Icon(
+//                            painter = painterResource(id = R.drawable.ic_udi), // ⚠️ 替换为你的批号图标文件名
+//                            contentDescription = "UDI",
+//                            modifier = Modifier.size(20.dp), // 调整大小以匹配字体
+//                            tint = MaterialTheme.colorScheme.onSurfaceVariant // 可选：让图标颜色跟随主题
+//                        )
+//                        Spacer(modifier = Modifier.width(4.dp)) // 图标和文字之间的间距
+//                        Text(
+//                            text = "${product.di} ${product.model ?: ""}".trim(),
+//                            style = MaterialTheme.typography.bodySmall,
+//                            color = MaterialTheme.colorScheme.onSurfaceVariant
+//                        )
+//                    }
+//
+//                }
+//            }
+//            // 显示数量
+//            Column(horizontalAlignment = Alignment.End) {
+//                val mainQty = if (isVerified) actQty ?.toInt() else bookQty.toInt()
+//                Text(
+//                    text = mainQty.toString(),
+//                    style = MaterialTheme.typography.headlineSmall,
+//                    fontWeight = FontWeight.Bold,
+//                    color = statusColor
+//                )
+//                Text(
+//                    text = when {
+//                        !isVerified -> "待盘点"
+//                        isError -> "差异: ${(actQty ?: 0.0) - bookQty}"
+//                        else -> "已核对"
+//                    },
+//                    style = MaterialTheme.typography.labelSmall,
+//                    fontWeight = FontWeight.SemiBold,
+//                    color = statusColor
+//                )
+//            }
+//        } // 👈 Row 在这里结束！
+//
+//        // === 分割线区域 (必须放在 Column 里，两个 Row 之间) ===
+//        Spacer(modifier = Modifier.height(5.dp))
+//        HorizontalDivider(thickness = 0.5.dp, color = Color.LightGray)
+//        Spacer(modifier = Modifier.height(5.dp))
+//
+//        // === 第二行：批号、效期、库位、厂家 ===
+//        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+//            // 左下角信息
+//            Column {
+//                Row(verticalAlignment = Alignment.CenterVertically) {
+//                    Icon(
+//                        painter = painterResource(id = R.drawable.ic_batch), // ⚠️ 替换为你的批号图标文件名
+//                        contentDescription = "批号",
+//                        modifier = Modifier.size(20.dp), // 调整大小以匹配字体
+//                        tint = MaterialTheme.colorScheme.onSurfaceVariant // 可选：让图标颜色跟随主题
+//                    )
+//                    Spacer(modifier = Modifier.width(4.dp)) // 图标和文字之间的间距
+//                    Text("批号: ${record.batchNumber}", style = MaterialTheme.typography.bodyMedium)
+//                }
+//                // 💡 建议：如果 expiryDate 是 Long 型 (如 20251231)，可能需要简单格式化一下，不然显示一串数字
+//
+//                Row(verticalAlignment = Alignment.CenterVertically) {
+//                    Icon(
+//                        painter = painterResource(id = R.drawable.use_bydate),
+//                        contentDescription = "批号",
+//                        modifier = Modifier.size(20.dp), // 调整大小以匹配字体
+//                        tint = MaterialTheme.colorScheme.onSurfaceVariant // 可选：让图标颜色跟随主题
+//                    )
+//                    Spacer(modifier = Modifier.width(4.dp)) // 图标和文字之间的间距
+//                    Text("效期: ${record.expiryDate}", style = MaterialTheme.typography.bodyMedium)
+//                }
+//            }
+//            // 右下角信息
+//            Column(horizontalAlignment = Alignment.End) {
+//                Text("\uD83D\uDCCD库位: ${record.location}", style = MaterialTheme.typography.bodyMedium)
+//                val mfr = (product?.manufacturer) ?: "未知厂家"
+//                Row(verticalAlignment = Alignment.CenterVertically) {
+//                    Icon(
+//                        painter = painterResource(id = R.drawable.ic_manufacturer2), // ⚠️ 替换为你的厂家图标文件名
+//                        contentDescription = "厂家",
+//                        modifier = Modifier.size(14.dp), // 厂家文字较小，图标也稍微设小一点
+//                        tint = Color.Gray // 与文字颜色保持一致
+//                    )
+//                    Spacer(modifier = Modifier.width(4.dp))
+//                    Text(
+//                        text = if (mfr.length > 10) mfr.take(10) + "..." else mfr,
+//                        style = MaterialTheme.typography.bodySmall,
+//                        color = Color.Gray
+//                    )
+//                }
+//            }
+//        }
+//    }
+//}
+// --- 子组件：单条库存记录卡片 (已支持高亮与效期徽标) ---
 @Composable
-fun StockRecordItem(combined: StockRecordCombined) {
+fun StockRecordItem(uiModel: StockRecordUiModel) {
+    // 从包装盒里拿出数据和状态
+    val combined = uiModel.combined
     val record = combined.record
     val product = combined.product
+    val highlightField = uiModel.highlightField
+    val expiryState = uiModel.expiryState
+
+    // 预设高亮背景色 (浅黄色高光)
+    val highlightBg = Color(0xFF84E7F5)
+
     val bookQty = record.quantity
     val actQty = record.actualQuantity
     val isVerified = actQty != null
     val isError = isVerified && (actQty != bookQty)
-    // 定义状态颜色
+
+    // 数量状态颜色
     val statusColor = when {
-        !isVerified -> Color(0xFF1F97F4) // 待盘点：蓝色系
-        isError -> MaterialTheme.colorScheme.error       // 有差异：红色系
-        else -> Color(0xFF4CAF50)                        // 正常：绿色
+        !isVerified -> Color(0xFF1F97F4) // 待盘点
+        isError -> MaterialTheme.colorScheme.error // 有差异
+        else -> Color(0xFF4CAF50) // 正常
     }
 
-    Column(modifier = Modifier.padding(16.dp)) {
-        // === 第一行：UDI 和 数量 ===
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top // 建议加上顶部对齐
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                // 显示产品名
-                Text(
-                    text = product?.productName ?: "未录入产品 (${record.di})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.width(250.dp)
-                )
-                // 显示规格/型号
-                if (product != null) {
+    // 效期文字颜色 (错误/过期变红，近效期变橙)
+    val expiryTextColor = when (expiryState) {
+        ExpiryState.EXPIRED -> MaterialTheme.colorScheme.error
+        ExpiryState.NEAR_EXPIRY -> Color(0xFFE65100) // 深橙色
+        ExpiryState.NORMAL -> MaterialTheme.typography.bodyMedium.color
+    }
+
+    // 最外层使用 Box，为了让徽标能绝对定位在右上角
+    Box(modifier = Modifier.fillMaxWidth()) {
+
+        Column(modifier = Modifier.padding(16.dp)) {
+            // === 第一行：UDI 和 数量 ===
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    // 产品名 (支持高亮)
+                    Text(
+                        text = product?.productName ?: "未录入产品 (${record.di})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .width(250.dp)
+                            .background(if (highlightField == HighlightField.PRODUCT_NAME) highlightBg else Color.Transparent)
+                    )
+
+                    if (product != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_udi),
+                                contentDescription = "UDI",
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            // UDI (支持高亮)
+                            Text(
+                                text = "${product.di} ${product.model ?: ""}".trim(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.background(if (highlightField == HighlightField.DI) highlightBg else Color.Transparent)
+                            )
+                        }
+                    }
+                }
+
+                // 显示数量
+                Column(horizontalAlignment = Alignment.End) {
+                    val mainQty = if (isVerified) actQty?.toInt() else bookQty.toInt()
+                    Text(
+                        text = mainQty.toString(),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = statusColor
+                    )
+                    Text(
+                        text = when {
+                            !isVerified -> "待盘点"
+                            isError -> "差异: ${(actQty ?: 0.0) - bookQty}"
+                            else -> "已核对"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = statusColor
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(5.dp))
+            HorizontalDivider(thickness = 0.5.dp, color = Color.LightGray)
+            Spacer(modifier = Modifier.height(5.dp))
+
+            // === 第二行：批号、效期、库位、厂家 ===
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                // 左下角信息
+                Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_udi), // ⚠️ 替换为你的批号图标文件名
-                            contentDescription = "UDI",
-                            modifier = Modifier.size(20.dp), // 调整大小以匹配字体
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant // 可选：让图标颜色跟随主题
-                        )
-                        Spacer(modifier = Modifier.width(4.dp)) // 图标和文字之间的间距
+                        Icon(painter = painterResource(id = R.drawable.ic_batch), contentDescription = "批号", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        // 批号 (支持高亮)
                         Text(
-                            text = "${product.di} ${product.model ?: ""}".trim(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = "批号: ${record.batchNumber}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.background(if (highlightField == HighlightField.BATCH_NUMBER) highlightBg else Color.Transparent)
                         )
                     }
 
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(painter = painterResource(id = R.drawable.use_bydate), contentDescription = "效期", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        // 效期文字 (应用状态颜色，如果异常则加粗)
+                        Text(
+                            text = "效期: ${record.expiryDate}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = expiryTextColor,
+                            fontWeight = if (expiryState != ExpiryState.NORMAL) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
                 }
-            }
-            // 显示数量
-            Column(horizontalAlignment = Alignment.End) {
-                val mainQty = if (isVerified) actQty ?.toInt() else bookQty.toInt()
-                Text(
-                    text = mainQty.toString(),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = statusColor
-                )
-                Text(
-                    text = when {
-                        !isVerified -> "待盘点"
-                        isError -> "差异: ${(actQty ?: 0.0) - bookQty}"
-                        else -> "已核对"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = statusColor
-                )
-            }
-        } // 👈 Row 在这里结束！
 
-        // === 分割线区域 (必须放在 Column 里，两个 Row 之间) ===
-        Spacer(modifier = Modifier.height(5.dp))
-        HorizontalDivider(thickness = 0.5.dp, color = Color.LightGray)
-        Spacer(modifier = Modifier.height(5.dp))
-
-        // === 第二行：批号、效期、库位、厂家 ===
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            // 左下角信息
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_batch), // ⚠️ 替换为你的批号图标文件名
-                        contentDescription = "批号",
-                        modifier = Modifier.size(20.dp), // 调整大小以匹配字体
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant // 可选：让图标颜色跟随主题
-                    )
-                    Spacer(modifier = Modifier.width(4.dp)) // 图标和文字之间的间距
-                    Text("批号: ${record.batchNumber}", style = MaterialTheme.typography.bodyMedium)
-                }
-                // 💡 建议：如果 expiryDate 是 Long 型 (如 20251231)，可能需要简单格式化一下，不然显示一串数字
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.use_bydate),
-                        contentDescription = "批号",
-                        modifier = Modifier.size(20.dp), // 调整大小以匹配字体
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant // 可选：让图标颜色跟随主题
-                    )
-                    Spacer(modifier = Modifier.width(4.dp)) // 图标和文字之间的间距
-                    Text("效期: ${record.expiryDate}", style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-            // 右下角信息
-            Column(horizontalAlignment = Alignment.End) {
-                Text("\uD83D\uDCCD库位: ${record.location}", style = MaterialTheme.typography.bodyMedium)
-                val mfr = (product?.manufacturer) ?: "未知厂家"
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_manufacturer2), // ⚠️ 替换为你的厂家图标文件名
-                        contentDescription = "厂家",
-                        modifier = Modifier.size(14.dp), // 厂家文字较小，图标也稍微设小一点
-                        tint = Color.Gray // 与文字颜色保持一致
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
+                // 右下角信息
+                Column(horizontalAlignment = Alignment.End) {
+                    // 库位 (支持高亮)
                     Text(
-                        text = if (mfr.length > 10) mfr.take(10) + "..." else mfr,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
+                        text = "仓库名称: ${record.location}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.background(if (highlightField == HighlightField.LOCATION) highlightBg else Color.Transparent)
                     )
+
+                    val mfr = (product?.manufacturer) ?: "未知厂家"
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(painter = painterResource(id = R.drawable.ic_manufacturer2), contentDescription = "厂家", modifier = Modifier.size(14.dp), tint = Color.Gray)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(text = if (mfr.length > 10) mfr.take(10) + "..." else mfr, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
                 }
+            }
+        }
+
+        // === 视觉徽标：悬浮在整个 Card 的右上角 ===
+        if (expiryState != ExpiryState.NORMAL) {
+            val badgeColor = if (expiryState == ExpiryState.EXPIRED) MaterialTheme.colorScheme.error else Color(0xFFFF9800)
+            val badgeText = if (expiryState == ExpiryState.EXPIRED) "已过期" else "近效期"
+
+            Surface(
+                color = badgeColor,
+                // 只给左下角和右上角切圆角，完美贴合卡片右上角
+                shape = RoundedCornerShape(topEnd = 12.dp, bottomStart = 8.dp),
+                modifier = Modifier.align(Alignment.TopEnd)
+            ) {
+                Text(
+                    text = badgeText,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
             }
         }
     }
 }
-
 // --- 子组件：盲盘/新增记录对话框 ---
 @Composable
 fun AddRecordDialog(
@@ -1053,7 +1226,10 @@ fun RecordDetailDialog(combined: StockRecordCombined, onDismiss: () -> Unit) {
                 if (product != null) {
                     Text("物料名称: ${product.productName}")
                 }
-                Text("UDI/物料编码: ${record.di}")
+                Text("UDI: ${record.di}")
+                if (product != null) {
+                    Text("物料编码: ${product.materialCode}")
+                }
                 Text("批号: ${record.batchNumber}")
                 Text("效期: ${record.expiryDate}") // 你可以加个格式化函数
                 Text("仓库名称: ${record.location}")
@@ -1258,4 +1434,6 @@ fun AuditRecordDialog(
         }
     )
 }
+
+
 

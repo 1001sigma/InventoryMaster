@@ -32,10 +32,6 @@ interface ProductDao {
     """)
     suspend fun searchProducts(query: String): List<ProductBase>
 
-//    1. [新增] 用于比对：根据 DI 查单个产品
-//    @Query("SELECT * FROM product_base WHERE di = :di LIMIT 1")
-//    suspend fun getProductByDione(di: String): ProductBase?
-
     // 2. [新增] 安全更新：用于覆盖旧产品 绝对不能用 REPLACE，否则有盘点记录时会闪退！
     @Update
     suspend fun updateProduct(product: ProductBase)

@@ -74,3 +74,20 @@ data class StockRecord(
     @ColumnInfo(name = "history_log")
     var historyLog: String? = ""
 )
+
+// 1. 定义哪些字段需要高亮
+enum class HighlightField {
+    NONE, PRODUCT_NAME, DI, BATCH_NUMBER, LOCATION
+}
+
+// 2. 定义效期的三种状态
+enum class ExpiryState {
+    NORMAL, NEAR_EXPIRY, EXPIRED
+}
+
+// 3. 打包给 UI 用的最终数据模型
+data class StockRecordUiModel(
+    val combined: StockRecordCombined, // 原来的数据库组合数据
+    val highlightField: HighlightField = HighlightField.NONE,
+    val expiryState: ExpiryState = ExpiryState.NORMAL
+)
