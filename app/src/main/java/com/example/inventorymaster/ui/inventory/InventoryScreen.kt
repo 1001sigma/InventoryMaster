@@ -283,7 +283,7 @@ fun InventoryScreen(
     LaunchedEffect(inventoryStateUI.userMessage) {
         inventoryStateUI.userMessage?.let { message ->
             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-            sessionViewModel.clearUserMessage() // 弹完就清空
+            inventoryViewModel.clearUserMessage() // 弹完就清空
             showUploadDialog = false     // 关闭弹窗
         }
     }

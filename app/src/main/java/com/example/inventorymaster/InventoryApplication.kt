@@ -10,15 +10,17 @@ class InventoryApplication : Application() {
     // 1. 初始化数据库 (lazy 表示用到时再创建，节省启动资源)
     val database by lazy { AppDatabase.getDatabase(this) }
 
-    // 2. 初始化仓库 (Repository)，供 ViewModel 使用
+    // 2. 初始化设置仓库 (DataStore)，统一管理所有配置
+    val settingsRepository by lazy { SettingsRepository(this) }
+
+    // 3. 初始化仓库 (Repository)，供 ViewModel 使用
+    // [重构] 用 SettingsRepository 替代 SharedPreferences，统一配置管理
     val repository: InventoryRepository by lazy {
         InventoryRepositoryImpl(
             productDao = database.productDao(),
             sessionDao = database.sessionDao(),
             stockRecordDao = database.stockRecordDao(),
-            prefs = getSharedPreferences("inventory_prefs", MODE_PRIVATE)
+            settingsRepository = settingsRepository
         )
     }
-
-    val settingsRepository by lazy { SettingsRepository(this) }
 }

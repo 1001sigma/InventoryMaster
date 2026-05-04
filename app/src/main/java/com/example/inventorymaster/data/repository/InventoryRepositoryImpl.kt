@@ -1,8 +1,7 @@
 package com.example.inventorymaster.data.repository
 
-import android.content.SharedPreferences
 import android.util.Log
-import androidx.core.content.edit
+import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.dao.ProductDao
 import com.example.inventorymaster.data.dao.SessionDao
 import com.example.inventorymaster.data.dao.StockRecordDao
@@ -22,11 +21,17 @@ import com.example.inventorymaster.data.network.InventoryApiService
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 
+/**
+ * 库存仓库实现类
+ *
+ * ⚠️ 重要变更：移除了 SharedPreferences 依赖，所有持久化配置统一通过 SettingsRepository (DataStore) 管理。
+ * 包括：服务器 IP 地址、同步时间戳等。
+ */
 class InventoryRepositoryImpl(
     private val sessionDao: SessionDao,
     private val stockRecordDao: StockRecordDao,
-    private val productDao: ProductDao, // [新增] 必须注入 ProductDao
-    private val prefs: SharedPreferences
+    private val productDao: ProductDao,
+    private val settingsRepository: SettingsRepository // [重构] 用 SettingsRepository 替代 SharedPreferences
 ) : InventoryRepository {
 
     // --- Session ---
@@ -70,7 +75,7 @@ class InventoryRepositoryImpl(
         // 否则外键约束会报错！
         val existingProduct = productDao.getProductByDi(record.di)
         if (existingProduct == null) {
-            // 如果字典里没有，自动创建一个“未知产品”占位，防止崩溃
+            // 如果字典里没有，自动创建一个"未知产品"占位，防止崩溃
             val placeholder = ProductBase(
                 di = record.di,
                 productName = "未知产品(扫码)",
@@ -88,10 +93,6 @@ class InventoryRepositoryImpl(
 
     // --- Excel Import (核心) ---
     override suspend fun importExcelData(sessionId: Long, products: List<ProductBase>, records: List<StockRecord>) {
-        // 1. 先更新字典库 (如果有新的产品资料，自动补全；旧的覆盖)
-        //productDao.insertProducts(products)
-        // 2. 再更新库存账本 (覆盖当前 Session 的数据)
-        //stockRecordDao.overwriteSessionData(sessionId, records)
         saveImportDataWithResolution(products,records)
     }
 
@@ -165,12 +166,12 @@ class InventoryRepositoryImpl(
             val cleanLoc = record.location.trim()
 
             // 🚑🚑🚑【关键补丁】孤儿救助行动 🚑🚑🚑
-            // 在插入记录前，一定要确认“爸爸”(产品) 是否存在！
+            // 在插入记录前，一定要确认"爸爸"(产品) 是否存在！
             val fatherProduct = productDao.getProductByDi(cleanDi)
 
             if (fatherProduct == null) {
                 // 😱 发现孤儿！Excel 里有这条记录，但产品库里竟然没这个 DI。
-                // 这会导致外键崩溃。所以，我们立刻给它造一个“临时爸爸”。
+                // 这会导致外键崩溃。所以，我们立刻给它造一个"临时爸爸"。
                 Log.w("DEBUG_SAVE", "⚠️ 发现缺失产品信息的记录: $cleanDi，正在自动补全...")
 
                 val dummyProduct = ProductBase(
@@ -222,27 +223,36 @@ class InventoryRepositoryImpl(
             }
         }
     }
-    //IP保存
-    override fun saveServerIp(ip: String) {
-        prefs.edit { putString("server_ip", ip) }
+
+    // ============================================================
+    // 🆕 IP 地址存储（已从 SharedPreferences 迁移至 DataStore）
+    // ============================================================
+
+    /**
+     * 保存服务器 IP 地址
+     * 委托给 SettingsRepository，统一使用 DataStore 存储
+     */
+    override suspend fun saveServerIp(ip: String) {
+        settingsRepository.saveServerIp(ip)
     }
 
-    override fun getServerIp(): String {
-        // 从 SharedPreferences 取出，如果没有存过，默认返回空字符串
-        return prefs.getString("server_ip", "") ?: ""
+    /**
+     * 读取服务器 IP 地址
+     * 委托给 SettingsRepository，统一使用 DataStore 存储
+     */
+    override suspend fun getServerIp(): String {
+        return settingsRepository.getServerIp()
     }
+
     // 全量上传
     override suspend fun exportFullSession(ip: String, sessionId: Long): Result<String> {
         return try {
-            val session = sessionDao.getSessionById(sessionId)
-                ?: return Result.failure(Exception("任务不存在"))
-
             val sessionEntity = sessionDao.getSessionById(sessionId)
-                ?: return Result.failure(Exception("找不到 Session $sessionId"))
+                ?: return Result.failure(Exception("找不到 任务 $sessionId"))
 
             val sessionDto = SessionDto(
                 id = sessionEntity.id,
-                uuid = session.uuid,
+                uuid = sessionEntity.uuid,
                 name = sessionEntity.name,
                 date = sessionEntity.date,
                 status = sessionEntity.status,
@@ -262,7 +272,7 @@ class InventoryRepositoryImpl(
             val productDtoList = combinedList
                 .map { combined ->
                     // 如果 combined.product 是 null，说明这是条孤儿记录
-                    // 我们手动创建一个“临时产品”发给服务器
+                    // 我们手动创建一个"临时产品"发给服务器
                     combined.product ?: ProductBase(
                         di = combined.record.di,
                         productName = "未录入产品 (上传补全)",
@@ -300,12 +310,12 @@ class InventoryRepositoryImpl(
             Result.failure(e)
         }
     }
+
     //同步上传（增量上传）
     override suspend fun pushUnsyncedData(sessionId: Long): Result<String> {
         return try {
             // 1. 先去数据库找，有没有 sync_status = 1 的数据
             val dirtyRecords = stockRecordDao.getDirtyRecords(sessionId)
-            //结束
 
             if (dirtyRecords.isEmpty()) {
                 return Result.success("没有需要同步的数据")
@@ -338,7 +348,12 @@ class InventoryRepositoryImpl(
                 products = relatedProducts
             )
             // 3. 发送数据
-            val api = InventoryApiService.Companion.create(prefs.getString("server_ip", "") ?: "")
+            // [重构] 从 DataStore 读取 IP，替代原来的 SharedPreferences
+            val serverIp = settingsRepository.getServerIp()
+            if (serverIp.isBlank()) {
+                return Result.failure(Exception("未设置服务器 IP 地址"))
+            }
+            val api = InventoryApiService.Companion.create(serverIp)
             val response = api.pushData(
                 sessionUuid = currentUuid,
                 data = pushPackage
@@ -349,7 +364,7 @@ class InventoryRepositoryImpl(
                 // ✅ 电脑说收到了
                 // 提取上传成功的 ID 列表
                 val successIds = dirtyRecords.map { it.id }
-                // ⚠️ 关键动作：把本地状态改为“已同步 (0)”，防止下次重复传
+                // ⚠️ 关键动作：把本地状态改为"已同步 (0)"，防止下次重复传
                 stockRecordDao.markAsSynced(successIds)
 
                 Result.success("成功同步 ${successIds.size} 条记录")
@@ -389,15 +404,15 @@ class InventoryRepositoryImpl(
             // 1. 保存/更新 Session (核心修复)
             // 直接使用服务器传回来的完美数据
             val serverSession = data.session
-//            val localSession = sessionDao.getSessionByUuid(serverSession.uuid)
+            val localByuuid = sessionDao.getSessionByUuid(serverSession.uuid)
 
             val finalLocalId: Long
 
-            if (localSession != null) {
+            if (localByuuid != null) {
                 // A. 熟人：本地已有，执行更新
-                finalLocalId = localSession.id // 👈 只要这一行，保持本地 ID 不变！
+                finalLocalId = localByuuid.id // 👈 只要这一行，保持本地 ID 不变！
 
-                val sessionToUpdate = localSession.copy(
+                val sessionToUpdate = localByuuid.copy(
                     name = serverSession.name,
                     date = serverSession.date,
                     status = serverSession.status,
@@ -416,8 +431,6 @@ class InventoryRepositoryImpl(
                 )
                 finalLocalId = sessionDao.insertSession(sessionToInsert)
             }
-
-
 
             // 2. 保存产品 (保持不变)
             for (pDto in data.products) {
@@ -470,14 +483,19 @@ class InventoryRepositoryImpl(
     // [核心实现] 下载/同步数据
     override suspend fun pullNewData(sessionId: Long): Result<String> {
         return try {
-            val ip = prefs.getString("server_ip", "") ?: return Result.failure(Exception("未设置IP"))
+            // [重构] 从 DataStore 读取 IP，替代原来的 SharedPreferences
+            val ip = settingsRepository.getServerIp()
+            if (ip.isBlank()) {
+                return Result.failure(Exception("未设置服务器 IP 地址"))
+            }
             val api = InventoryApiService.Companion.create(ip)
             val session = sessionDao.getSessionById(sessionId)
                 ?: return Result.failure(Exception("任务不存在"))
             val currentUuid = session.uuid
-            val lastSyncTime = prefs.getLong("LAST_SYNC_TIME_$sessionId", 0L)
+            // [重构] 从 DataStore 读取同步时间戳，替代原来的 SharedPreferences
+            val lastSyncTime = settingsRepository.getLastSyncTime(sessionId)
             // 2. 发起请求
-            val response = api.pullData(currentUuid,lastSyncTime)
+            val response = api.pullData(currentUuid, lastSyncTime)
 
             if (response.isSuccessful) {
                 val remoteRecords = response.body()?: emptyList()
@@ -521,10 +539,11 @@ class InventoryRepositoryImpl(
                     if (maxServerTime > 0) {
                         // 逻辑：下次从这个时间点之后开始查
                         // 为了稳妥，取 (当前记录的旧时间) 和 (新时间) 的较大值，防止时间倒流
-                        val currentSavedTime = prefs.getLong("LAST_SYNC_TIME_$sessionId", 0L)
+                        val currentSavedTime = settingsRepository.getLastSyncTime(sessionId)
 
                         if (maxServerTime > currentSavedTime) {
-                            prefs.edit().putLong("LAST_SYNC_TIME_$sessionId", maxServerTime).apply()
+                            // [重构] 保存到 DataStore，替代原来的 SharedPreferences
+                            settingsRepository.saveLastSyncTime(sessionId, maxServerTime)
                             Log.d("SYNC", "同步锚点已更新为服务器时间: $maxServerTime")
                         }
                     }

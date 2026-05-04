@@ -7,14 +7,25 @@ import androidx.room.PrimaryKey
 data class InventorySession(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    //新增：全球唯一标识符
     val uuid: String = java.util.UUID.randomUUID().toString(),
-    val name: String,         // 例如 "2023-10月盘点"
-    val date: Long,      // 创建时间 (存毫秒数)
-    val isLocked: Boolean = false, // 是否锁定
-    //[新增] 状态字段
-    // 0 = 进行中 (可改, 可删)
-    // 1 = 已归档 (只读, 可删)
-    // 2 = 已锁定 (只读, 不可删)
-    val status: Int = 0
+
+    // 1. 业务核心
+    val name: String,
+    val sessionType: Int = 0, // 0:盘库, 1:核对
+
+    // 2. 时间与状态
+    val date: Long = System.currentTimeMillis(),
+    val status: Int = 0,      // 0:进行中, 1:已归档, 2:已锁定
+    val isLocked: Boolean = false,
+
+    // 3. 数据来源
+    val sessionSource: Int = 0,      // 0:本地创建, 1:服务器下发
+    val remoteId: String? = null, // 服务器端的原始ID
+
+    // 4. 统计冗余 (可选，为了UI流畅)
+    val totalItems: Int = 0,  // 总货位数/单据行数
+    val scannedItems: Int = 0, // 已扫描数
+
+    // 5. 预留字段 (仅一个，存JSON用)
+    val extJson: String? = null
 )

@@ -10,6 +10,14 @@ import com.google.mlkit.vision.text.Text
 
 object RecognitionUtils {
 
+    private val barcodeScanner by lazy {
+        BarcodeScanning.getClient()
+    }
+
+    private val textRecognizer by lazy {
+        TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+    }// 如果你引入了中文库，这里改成 TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+
     // 1. 识别二维码 (返回二维码内容的字符串)
     fun recognizeQRCode(
         image: InputImage,
@@ -17,8 +25,8 @@ object RecognitionUtils {
         onFailure: (Exception) -> Unit,
         onComplete: () -> Unit ={}
     ) {
-        val scanner = BarcodeScanning.getClient()
-        scanner.process(image)
+
+        barcodeScanner.process(image)
             .addOnSuccessListener { barcodes ->
                 for (barcode in barcodes) {
                     barcode.rawValue?.let { value ->
@@ -31,7 +39,6 @@ object RecognitionUtils {
             .addOnFailureListener { onFailure(it) }
             .addOnCompleteListener {
                 onComplete()
-                scanner.close()
             }
     }
 
@@ -42,18 +49,13 @@ object RecognitionUtils {
         onFailure: (Exception) -> Unit,
         onComplete: () -> Unit ={}
     ) {
-        // 使用默认的拉丁字母识别器 (英文/数字)
-        // 如果你引入了中文库，这里改成 TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
-        val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
-
-        recognizer.process(image)
+        textRecognizer.process(image)
             .addOnSuccessListener { visionText ->
                 onSuccess(visionText)
             }
             .addOnFailureListener { onFailure(it) }
             .addOnCompleteListener {
                 onComplete()
-                recognizer.close()
             }
         // TextRecognizer 建议复用，但在简单场景下用完关闭也可以，或者放在 ViewModel 里单例持有
     }

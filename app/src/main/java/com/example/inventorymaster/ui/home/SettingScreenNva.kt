@@ -56,37 +56,29 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.inventorymaster.ui.theme.ModernColorSchemes
 import com.example.inventorymaster.viewmodel.SettingsViewModel
 
 // 预设颜色列表
-val PresetColors = listOf(
-    Color(0xFF6EDA74), // 绿色 (默认)
-    Color(0xFF2196F3), // 蓝色
-    Color(0xFFF44336), // 红色
-    Color(0xFFFF9800), // 橙色
-    Color(0xFFAB2FC0), // 紫色
-    Color(0xFF009688), // 青色
-    Color(0xFF795548), // 棕色
-    Color(0xFF607D8B)  // 蓝灰
-)
+val PresetColors = ModernColorSchemes.allSchemes.map { it.primary }
 
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel) {
-    // --- 临时状态 (后续需要接到 ViewModel/DataStore) ---
     val uiState by viewModel.uiState.collectAsState()
     var isDynamicColor by remember { mutableStateOf(false) }
     var isAmoledMode by remember { mutableStateOf(false) }
     var selectedColor by remember { mutableStateOf(PresetColors[0]) }
 
     // 控制折叠状态
-    var customSectionExpanded by remember { mutableStateOf(true) } // "自定义"默认展开
+    var customSectionExpanded by remember { mutableStateOf(false) } // "自定义"默认展开
     var nightModeExpanded by remember { mutableStateOf(false) }    // "夜间模式"默认收起
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. 顶部提示卡片 (像截图里的"捐赠"位置)
+        // 1. 顶部提示卡片
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)),
@@ -134,8 +126,9 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         items(PresetColors) { color ->
-                            ColorSwatch(
+                            ColorSwatchWithLabel(
                                 color = color,
+                                label = "",
                                 isSelected = uiState.seedColor == color.toArgb().toLong(),
                                 onClick = { viewModel.setSeedColor(color.toArgb().toLong()) }
                             )
@@ -155,55 +148,13 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
                         )
                     }
 
-                    // C. AMOLED 模式
-                    SettingsSwitch(
-                        title = "Amoled 模式",
-                        subtitle = "在夜间模式下背景设为纯黑",
-                        icon = Icons.Default.Brightness2, // 或者 Icons.Default.DarkMode
-                        checked = uiState.isAmoledMode,
-                        onCheckedChange = {viewModel.setAmoledMode(it)}
-                    )
-
-                    // D. 图标形状 (占位)
-                    SettingsItem(
-                        title = "图标形状",
-                        subtitle = "在图标下方添加容器",
-                        icon = Icons.Default.CropSquare,
-                        onClick = { /* TODO */ }
-                    )
                 }
             }
         }
 
         // 3. "夜间模式" 分组 (可折叠)
         item {
-            ExpandableSection(
-                title = "夜间模式",
-                icon = Icons.Default.NightsStay,
-                expanded = nightModeExpanded,
-                onExpandChange = { nightModeExpanded = it }
-            ) {
-                Column {
-                    SettingsItem(
-                        title = "跟随系统",
-                        subtitle = "默认开启",
-                        icon = Icons.Default.SettingsSystemDaydream,
-                        onClick = {viewModel.setThemeMode(0)}
-                    )
-                    SettingsItem(
-                        title = "强制深色",
-                        subtitle = "总是使用深色主题",
-                        icon = Icons.Default.DarkMode,
-                        onClick = {viewModel.setThemeMode(2)}
-                    )
-                    SettingsItem(
-                        title = "强制浅色",
-                        subtitle = "总是使用浅色主题",
-                        icon = Icons.Default.DarkMode,
-                        onClick = {viewModel.setThemeMode(1)}
-                    )
-                }
-            }
+
         }
 
         // 底部留白，防止被导航栏遮挡
@@ -339,32 +290,58 @@ fun SettingsItem(
 /**
  * 颜色选择圆球
  */
+/**
+ * 带标签的颜色选择球
+ */
 @Composable
-fun ColorSwatch(
+fun ColorSwatchWithLabel(
     color: Color,
+    label: String,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .size(48.dp) // 大小
-            .clip(CircleShape)
-            .background(color)
-            .clickable(onClick = onClick)
-            .border(
-                width = if (isSelected) 3.dp else 0.dp,
-                color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = CircleShape
-            ),
-        contentAlignment = Alignment.Center
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clickable(onClick = onClick)
     ) {
-        if (isSelected) {
-            Icon(
-                Icons.Default.Check,
-                contentDescription = null,
-                tint = Color.White, // 选中时显示白色对勾
-                modifier = Modifier.size(24.dp)
-            )
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(color)
+                .border(
+                    width = if (isSelected) 4.dp else 2.dp,
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        Color.Transparent
+                    },
+                    shape = CircleShape
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isSelected) {
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint = if (isContrastEnough(color)) Color.Black else Color.White,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
         }
+
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 10.sp,
+            modifier = Modifier.padding(top = 4.dp),
+            maxLines = 1
+        )
     }
+}
+
+// 辅助函数：判断文字是否需要白色
+fun isContrastEnough(color: Color): Boolean {
+    val luminance = (color.red * 0.299 + color.green * 0.587 + color.blue * 0.114)
+    return luminance > 0.5
 }

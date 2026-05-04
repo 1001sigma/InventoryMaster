@@ -15,8 +15,18 @@ import com.google.mlkit.vision.common.InputImage
  */
 abstract class BaseImageAnalyzer : ImageAnalysis.Analyzer {
 
+    // 1. 【新增】状态锁，防止并发处理导致手机发烫
+    @Volatile
+    protected var isProcessing = false
+
     @OptIn(ExperimentalGetImage::class)
     override fun analyze(imageProxy: ImageProxy) {
+        // 2. 【新增】如果上一帧还在处理，直接丢弃当前帧
+        if (isProcessing) {
+            imageProxy.close()
+            return
+        }
+
         val mediaImage = imageProxy.image
 
         // 1. 安全检查：如果相机传来的图是空的，直接关闭并返回，防止崩溃
@@ -26,6 +36,8 @@ abstract class BaseImageAnalyzer : ImageAnalysis.Analyzer {
         }
 
         try {
+            // 3. 【新增】加锁：标记开始处理
+            isProcessing = true
             // 2. 统一转换：将 CameraX 的 Image 转换为 ML Kit 需要的 InputImage
             // rotationDegrees 是矫正方向的关键
             val inputImage = InputImage.fromMediaImage(
@@ -41,7 +53,7 @@ abstract class BaseImageAnalyzer : ImageAnalysis.Analyzer {
         } catch (e: Exception) {
             // 4. 兜底容错：如果处理过程发生任何异常，确保关闭流，防止相机卡死
             e.printStackTrace()
-            imageProxy.close()
+            finishFrame(imageProxy)
         }
     }
 
@@ -53,6 +65,12 @@ abstract class BaseImageAnalyzer : ImageAnalysis.Analyzer {
     abstract fun process(image: InputImage, imageProxy: ImageProxy)
 
     // --- 通用工具方法：供子类使用 ---
+
+    // 5. 【新增】核心工具方法：统一解锁并释放帧，供所有子类调用
+    protected fun finishFrame(imageProxy: ImageProxy) {
+        isProcessing = false
+        imageProxy.close()
+    }
 
     /**
      * 辅助方法：将 ImageProxy 转为 Bitmap (用于多码定格时的截图)

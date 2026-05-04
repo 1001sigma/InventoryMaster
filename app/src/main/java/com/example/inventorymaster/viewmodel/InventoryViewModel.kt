@@ -339,7 +339,7 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
     //endregion
 
     // 导入逻辑
-    fun importExcelFile(context: Context, uri: Uri, sessionId: Long) {
+    fun importExcelFile(context: Context, uri: Uri, sessionId: Long,isDiValidationEnabled: Boolean = false) {
         // 开启一个协程，指定在 IO 线程运行
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -550,5 +550,9 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
     // 👇 新增：关闭警告弹窗并清空错误列表
     fun clearInvalidDiList() {
         _uiState.value = _uiState.value.copy(invalidDiList = emptyList())
+    }
+
+    fun clearUserMessage() {
+        _uiState.value = _uiState.value.copy(userMessage = null)
     }
 }

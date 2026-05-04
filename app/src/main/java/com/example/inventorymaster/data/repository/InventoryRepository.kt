@@ -65,9 +65,10 @@ interface InventoryRepository {
     //拉取云端列表
     suspend fun fetchCloudSessions(ip: String): Result<List<SessionDto>>
 
-    fun saveServerIp(ip: String)
+    suspend fun saveServerIp(ip: String)
 
-    fun getServerIp(): String
+    suspend fun getServerIp(): String
+
 
 
 }

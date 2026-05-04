@@ -47,9 +47,12 @@ class SyncViewModel(private val repository: InventoryRepository) : ViewModel() {
     val uiState: StateFlow<SyncState> = _uiState.asStateFlow()
 
     init {
-        val savedIp = repository.getServerIp()
-        if (savedIp.isNotEmpty()) {
-            _uiState.update { it.copy(lastServerIp = savedIp) }
+        // [重构] getServerIp 现在是挂起函数，需要在协程中调用
+        viewModelScope.launch {
+            val savedIp = repository.getServerIp()
+            if (savedIp.isNotEmpty()) {
+                _uiState.update { it.copy(lastServerIp = savedIp) }
+            }
         }
     }
 

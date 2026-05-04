@@ -6,7 +6,6 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
-import kotlin.uuid.Uuid
 
 /**
  * L2 库存实物记录表 (账本表)
@@ -66,7 +65,7 @@ data class StockRecord(
     @ColumnInfo(name = "last_update_time")
     var lastUpdateTime: Long = System.currentTimeMillis(),
 
-    // 3. 同步状态 (必填，用于断网续传) 0=已同步, 1=待上传
+    // 3. 同步状态 (必填，用于断网续传) 0=已同步, 1=待上传，
     @ColumnInfo(name = "sync_status")
     var syncStatus: Int = 0,
 

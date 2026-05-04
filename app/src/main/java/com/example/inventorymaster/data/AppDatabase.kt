@@ -15,7 +15,7 @@ import com.example.inventorymaster.data.entity.StockRecord
 @Database(
     entities = [ProductBase::class, InventorySession::class, StockRecord::class],
     version = 3,
-    exportSchema = false
+    exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
 

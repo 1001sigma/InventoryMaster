@@ -21,7 +21,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -63,9 +63,6 @@ dependencies {
     implementation("androidx.room:room-ktx:$room_version") // 支持协程
     ksp("androidx.room:room-compiler:$room_version")     // 编译器
 
-    // --- JSON 解析 Gson ---
-    implementation("com.google.code.gson:gson:2.10")
-
     implementation(platform("androidx.compose:compose-bom:2024.02.01"))
 
     // --- 后面会用到的 ViewModel 和 Navigation ---
@@ -104,5 +101,6 @@ dependencies {
     implementation ("com.huaban:jieba-analysis:1.0.2")
     // DataStore Preferences
     implementation("androidx.datastore:datastore-preferences:1.2.0")
+
 
 }

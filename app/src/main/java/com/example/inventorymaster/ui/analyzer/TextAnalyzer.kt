@@ -23,7 +23,7 @@ class TextAnalyzer(
         // getAndSet(false) 意味着：读取当前值，如果是 true，读完立刻把它置为 false
         // 这样保证了只处理这一帧，不会连续识别
         if (!isCaptureRequested.getAndSet(false)) {
-            imageProxy.close()
+            finishFrame(imageProxy)
             return
         }
 
@@ -35,11 +35,11 @@ class TextAnalyzer(
             image,
             onSuccess = { result ->
                 onOcrResult(result)
-                imageProxy.close() // 识别成功，释放
+                finishFrame(imageProxy) // 识别成功，释放
             },
             onFailure = { e ->
                 onError(e.message ?: "Unknown error")
-                imageProxy.close() // 识别失败，也要释放
+                finishFrame(imageProxy) // 识别失败，也要释放
             },
             onComplete = {
                 // 如果工具类有 onComplete，也可以在这里释放，

@@ -51,13 +51,13 @@ class BarcodeAnalyzer(
             .addOnSuccessListener { barcodes ->
                 // A. 基础过滤
                 if (barcodes.isEmpty()) {
-                    imageProxy.close()
+                    finishFrame(imageProxy)
                     return@addOnSuccessListener
                 }
 
                 val validBarcodes = barcodes.filter { !it.rawValue.isNullOrBlank() }
                 if (validBarcodes.isEmpty()) {
-                    imageProxy.close()
+                    finishFrame(imageProxy)
                     return@addOnSuccessListener
                 }
 
@@ -73,12 +73,12 @@ class BarcodeAnalyzer(
                     if (bestBarcode?.rawValue != null) {
                         onScanResult(bestBarcode.rawValue!!)
                     }
-                    imageProxy.close()
+                    finishFrame(imageProxy)
                 }
             }
             .addOnFailureListener {
                 Log.e("BarcodeAnalyzer", "Scan failed", it)
-                imageProxy.close()
+                finishFrame(imageProxy)
             }
     }
 
@@ -136,7 +136,7 @@ class BarcodeAnalyzer(
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
-                imageProxy.close()
+                finishFrame(imageProxy)
             }
         }
     }

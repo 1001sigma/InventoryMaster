@@ -72,6 +72,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.inventorymaster.batchscanner.BatchScannerScreen
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.entity.SessionWithProgress
 import com.example.inventorymaster.ui.analyzer.ScanScreen
@@ -86,6 +87,10 @@ import java.text.SimpleDateFormat
 import java.time.LocalDate
 import java.util.Date
 import java.util.Locale
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+// 如果要用到相册图标：
+import androidx.compose.material.icons.filled.Image
 
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -134,6 +139,22 @@ fun SessionListScreen(
         }
     }
 
+    // ... 其他 remember 变量
+    var showBatchScannerTest by remember { mutableStateOf(false) } // 新增：控制批量扫描测试
+    // ... 原有的 remember 变量 (比如 showBatchScannerTest)
+// 新增：保存选中的图片 Uri
+    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+// 新增：注册一个去相册选图的启动器
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedImageUri = uri // 拿到图片的 Uri
+            showBatchScannerTest = true // 拿到图片后再打开扫描界面
+        }
+    }
+
+
     // --- 2. 界面布局 (Box 代替 Scaffold) ---
     Box(modifier = Modifier.fillMaxSize()) {
         // A. 列表层
@@ -174,6 +195,7 @@ fun SessionListScreen(
                 .align(Alignment.BottomEnd)
                 .padding(16.dp) // 距离屏幕边缘的距离
         ) {
+
             // 主按钮
             FloatingActionButton(
                 onClick = { showFabMenu = true },
@@ -225,12 +247,48 @@ fun SessionListScreen(
                         }
                     }
                 )
+
+                // --- 新增测试选项 ---
+                // --- 修改后的测试选项 ---
+                DropdownMenuItem(
+                    text = { Text("[测试] 从相册选图扫描") },
+                    leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = Color.Magenta) },
+                    onClick = {
+                        showFabMenu = false
+                        // 启动相册，只看图片类型的文件
+                        imagePickerLauncher.launch("image/*")
+                    }
+                )
+
             }
         }
     }
 
 
 // --- 弹窗逻辑区 ---
+    // --- 新增测试界面挂载 ---
+    // --- 修改测试界面挂载 ---
+    if (showBatchScannerTest) {
+        BackHandler {
+            showBatchScannerTest = false
+            selectedImageUri = null // 返回时清空数据
+        }
+
+        BatchScannerScreen(
+            inputUri = selectedImageUri, // 新增：把相册选的 Uri 传进去
+            targetList = null, // 模拟的对比清单
+            onComplete = { results ->
+                Log.d("BatchScannerTest", "扫描完成，结果: $results")
+                showBatchScannerTest = false
+                selectedImageUri = null // 完成后清空数据
+                Toast.makeText(context, "扫描成功: ${results.size} 条", Toast.LENGTH_SHORT).show()
+            },
+            onClose = {
+                showBatchScannerTest = false
+                selectedImageUri = null // 关闭时清空数据
+            }
+        )
+    }
 
 // 1. 新建任务弹窗 (你之前应该有，这里略写)
     if (showCreateDialog) {

@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 // 定义 DataStore 的扩展属性，单例模式
@@ -36,9 +37,14 @@ class SettingsRepository(private val context: Context) {
         val IS_SIMPLE_MODE = booleanPreferencesKey("is_simple_mode")
         val SHOW_OCR_MASK = booleanPreferencesKey("show_ocr_mask")
         val ENABLE_MULTI_SCAN = booleanPreferencesKey("enable_multi_scan")
-
         // 👇 新增：DI 校验的 Key
         val ENABLE_DI_VALIDATION = booleanPreferencesKey("enable_di_validation")
+
+        // ============================================================
+        // 🆕 网络同步相关 Key（原 SharedPreferences 迁移至 DataStore）
+        // ============================================================
+        // 服务器 IP 地址
+        val SERVER_IP = stringPreferencesKey("server_ip")
     }
 
     // 1. 读取数据 (暴露为一个 Flow，这样数据一变，UI 就能收到通知)
@@ -91,5 +97,54 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun updateDiValidation(enable: Boolean) {
         context.dataStore.edit { it[Keys.ENABLE_DI_VALIDATION] = enable }
+    }
+
+    // ============================================================
+    // 🆕 网络同步相关方法（原 SharedPreferences 迁移至 DataStore）
+    // ============================================================
+
+    /**
+     * 保存服务器 IP 地址到 DataStore
+     * @param ip 服务器 IP 地址
+     */
+    suspend fun saveServerIp(ip: String) {
+        context.dataStore.edit { preferences ->
+            preferences[Keys.SERVER_IP] = ip
+        }
+    }
+
+    /**
+     * 从 DataStore 读取服务器 IP 地址
+     * @return 保存的 IP 地址，如果没有则返回空字符串
+     */
+    suspend fun getServerIp(): String {
+        return context.dataStore.data.map { preferences ->
+            preferences[Keys.SERVER_IP] ?: ""
+        }.first()
+    }
+
+    /**
+     * 保存指定任务的同步时间戳到 DataStore
+     * 用于增量同步时记录上次拉取的时间点，避免重复拉取
+     * @param sessionId 任务 ID
+     * @param timestamp 同步时间戳（毫秒）
+     */
+    suspend fun saveLastSyncTime(sessionId: Long, timestamp: Long) {
+        val key = stringPreferencesKey("last_sync_time_$sessionId")
+        context.dataStore.edit { preferences ->
+            preferences[key] = timestamp.toString()
+        }
+    }
+
+    /**
+     * 读取指定任务的同步时间戳
+     * @param sessionId 任务 ID
+     * @return 上次同步时间戳，如果没有则返回 0L
+     */
+    suspend fun getLastSyncTime(sessionId: Long): Long {
+        val key = stringPreferencesKey("last_sync_time_$sessionId")
+        return context.dataStore.data.map { preferences ->
+            preferences[key]?.toLongOrNull() ?: 0L
+        }.first()
     }
 }

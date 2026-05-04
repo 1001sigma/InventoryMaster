@@ -86,8 +86,6 @@ class SessionViewModel(private val repository: InventoryRepository) : ViewModel(
         }
     }
 
-    fun clearUserMessage() {
-        _uiState.value = _uiState.value.copy(userMessage = null)
-    }
+
 }
 

@@ -35,6 +35,7 @@ fun MainScreen(
     val currentRoute = navBackStackEntry?.destination?.route ?: "home"
 
     Scaffold(
+
         topBar = {
             TopAppBar(
                 title = {
