@@ -99,7 +99,8 @@ fun SessionListScreen(
     sessionViewModel: SessionViewModel,
     inventoryViewModel: InventoryViewModel,
     syncViewModel: SyncViewModel,
-    onSessionClick: (Long) -> Unit
+    onSessionClick: (Long) -> Unit,
+    onCreateNewTask: () -> Unit // <--- 新增这行：用于通知宿主跳转到详情页
 ) {
     val sessionState by sessionViewModel.uiState.collectAsState()
     val inventoryState by inventoryViewModel.uiState.collectAsState()
@@ -139,20 +140,7 @@ fun SessionListScreen(
         }
     }
 
-    // ... 其他 remember 变量
-    var showBatchScannerTest by remember { mutableStateOf(false) } // 新增：控制批量扫描测试
-    // ... 原有的 remember 变量 (比如 showBatchScannerTest)
-// 新增：保存选中的图片 Uri
-    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
-// 新增：注册一个去相册选图的启动器
-    val imagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            selectedImageUri = uri // 拿到图片的 Uri
-            showBatchScannerTest = true // 拿到图片后再打开扫描界面
-        }
-    }
+
 
 
     // --- 2. 界面布局 (Box 代替 Scaffold) ---
@@ -248,15 +236,14 @@ fun SessionListScreen(
                     }
                 )
 
-                // --- 新增测试选项 ---
-                // --- 修改后的测试选项 ---
+                // ================= 新增：选项 D: 新建批量/高级盘点 =================
                 DropdownMenuItem(
-                    text = { Text("[测试] 从相册选图扫描") },
-                    leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = Color.Magenta) },
+                    text = { Text("新建批量盘点(GS1)") },
+                    leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null) }, // 你可以换成你喜欢的图标
                     onClick = {
                         showFabMenu = false
-                        // 启动相册，只看图片类型的文件
-                        imagePickerLauncher.launch("image/*")
+                        // 直接触发跳转回到 MainScreenNav，让它导航到 taskDetail 页面
+                        onCreateNewTask()
                     }
                 )
 
@@ -266,29 +253,7 @@ fun SessionListScreen(
 
 
 // --- 弹窗逻辑区 ---
-    // --- 新增测试界面挂载 ---
-    // --- 修改测试界面挂载 ---
-    if (showBatchScannerTest) {
-        BackHandler {
-            showBatchScannerTest = false
-            selectedImageUri = null // 返回时清空数据
-        }
 
-        BatchScannerScreen(
-            inputUri = selectedImageUri, // 新增：把相册选的 Uri 传进去
-            targetList = null, // 模拟的对比清单
-            onComplete = { results ->
-                Log.d("BatchScannerTest", "扫描完成，结果: $results")
-                showBatchScannerTest = false
-                selectedImageUri = null // 完成后清空数据
-                Toast.makeText(context, "扫描成功: ${results.size} 条", Toast.LENGTH_SHORT).show()
-            },
-            onClose = {
-                showBatchScannerTest = false
-                selectedImageUri = null // 关闭时清空数据
-            }
-        )
-    }
 
 // 1. 新建任务弹窗 (你之前应该有，这里略写)
     if (showCreateDialog) {

@@ -32,12 +32,18 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PhotoLibrary
+import com.example.inventorymaster.utils.ImageStorageUtils
 
 @Composable
 fun BatchScannerScreen(
     inputUri: Uri? = null,              // 新增：外部传入的照片 Uri（可选）
     targetList: List<String>? = null,   // 单据清单（可选）
-    onComplete: (List<String>) -> Unit, // 模块出口
+    onComplete: (List<String>, Uri) -> Unit, // 模块出口
     onClose: () -> Unit,                // 退出模块
     viewModel: BatchScannerViewModel = viewModel()
 ) {
@@ -45,6 +51,23 @@ fun BatchScannerScreen(
     val scannedBarcodes by viewModel.scannedBarcodes.collectAsState()
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            // 用户选择了图片，切换到 IO 线程进行解析
+            coroutineScope.launch(Dispatchers.IO) {
+                val bitmap = uriToBitmap(context, uri)
+                if (bitmap != null) {
+                    // 图片解析成功，直接进入处理流程
+                    viewModel.processCapturedImage(bitmap)
+                } else {
+                    Log.e("BatchScanner", "从相册加载图片失败")
+                }
+            }
+        }
+    }
 
     // 初始化流转逻辑
     LaunchedEffect(inputUri, targetList) {
@@ -74,7 +97,13 @@ fun BatchScannerScreen(
                     onImageCaptured = { bitmap ->
                         viewModel.processCapturedImage(bitmap)
                     },
-                    onClose = onClose
+                    onClose = onClose,
+                    // 新增：触发相册选择器（仅限图片）
+                    onGalleryClick = {
+                        galleryLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    }
                 )
             }
             is ScannerUiState.Processing -> {
@@ -92,7 +121,15 @@ fun BatchScannerScreen(
                             val validResults = scannedBarcodes
                                 .filter { it.status == ScanStatus.MATCHED }
                                 .map { it.displayValue }
-                            onComplete(validResults)
+
+                            // 关键点：先将标记（绿框✔/红框✘）永久绘制到图片上再保存
+                            val markedBitmap = ImageStorageUtils.drawBarcodesOnBitmap(reviewBitmap, scannedBarcodes)
+                            val savedUri = ImageStorageUtils.saveBitmapToInternal(context, markedBitmap)
+                            // 回收临时创建的标记位图
+                            if (markedBitmap != reviewBitmap) markedBitmap.recycle()
+                            if (savedUri != null) {
+                                onComplete(validResults, savedUri)
+                            }
                         }
                     )
                 } else {
@@ -125,15 +162,12 @@ private fun uriToBitmap(context: Context, uri: Uri): Bitmap? {
     }
 }
 
-// ==============================================================================
-// 下方的 CaptureView, ProcessingView, ReviewView 与上一个步骤提供的代码完全一致，无需改动
-// 为保持代码完整性，附在下方：
-// ==============================================================================
 
 @Composable
 private fun CaptureView(
     onImageCaptured: (Bitmap) -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onGalleryClick: () -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -210,6 +244,22 @@ private fun CaptureView(
                 .size(80.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color.White)
         ) {}
+
+        // 新增：相册入口按钮
+        IconButton(
+            onClick = onGalleryClick,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 32.dp, bottom = 64.dp) // 放置在左下角
+                .background(Color.Black.copy(alpha = 0.5f), CircleShape) // 加个半透明背景避免看不清
+                .size(48.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.PhotoLibrary,
+                contentDescription = "选择相册",
+                tint = Color.White
+            )
+        }
     }
 }
 

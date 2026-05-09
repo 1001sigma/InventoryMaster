@@ -50,7 +50,7 @@ class QRCodeScannerUtil {
     private suspend fun decodeBitmapByTiling(
         originalImage: Bitmap,
         targetTileSize: Int = 800,
-        overlapPixels: Int = 150
+        overlapPixels: Int = 200
     ): List<GlobalBarcode> = withContext(Dispatchers.Default) {
 
         val cols = ceil(originalImage.width.toDouble() / targetTileSize).toInt()
