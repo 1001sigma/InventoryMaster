@@ -88,7 +88,7 @@ fun ModernAlertDialog(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(40.dp),
+                        .height(48.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -119,12 +119,12 @@ fun ModernAlertDialog(
                     // 关闭按钮 (X)
                     IconButton(
                         onClick = onDismiss,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "关闭",
-                            tint = Color.Gray,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp)
                         )
                     }

@@ -145,7 +145,7 @@ fun WordSelectionSheet(
                 FilledIconButton(
                     onClick = { onConfirm(previewText) },
                     enabled = previewText.isNotEmpty(),
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(48.dp)
                 ) { Icon(Icons.Default.Check, null) }
             }
 
@@ -178,7 +178,7 @@ fun WordSelectionSheet(
             if (isLoading) {
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
-                    Text("正在智能拆解...", Modifier.padding(top = 48.dp), fontSize = 12.sp, color = Color.Gray)
+                    Text("正在智能拆解...", Modifier.padding(top = 48.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else if (termList.isEmpty()) {
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
@@ -205,7 +205,7 @@ fun WordSelectionSheet(
                 ) {
                     Column(Modifier.verticalScroll(scrollState)) {
                         // 提示用户
-                        Text("识别结果 (智能分词)", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(bottom = 8.dp))
+                        Text("识别结果 (智能分词)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(bottom = 8.dp))
 
                         FlowRow(
                             modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp),

@@ -4,7 +4,7 @@ import android.content.Context
 import android.net.Uri
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
-import com.example.inventorymaster.data.entity.StockRecordCombined
+import com.example.inventorymaster.data.model.StockRecordCombined
 import com.google.gson.Gson
 import org.apache.poi.ss.usermodel.Cell
 import org.apache.poi.ss.usermodel.CellType
@@ -461,6 +461,43 @@ object ExcelUtils {
                 else -> ""
             }
         } catch (e: Exception) { "" }
+    }
+
+    // --- 产品库专用导出 (纯 ProductBase，无库存字段) ---
+    fun exportProductsToExcel(outputStream: OutputStream, products: List<ProductBase>) {
+        val workbook = XSSFWorkbook()
+        val sheet = workbook.createSheet("产品库")
+        sheet.defaultRowHeightInPoints = 20f
+        val headerStyle = workbook.createCellStyle().apply {
+            val font = workbook.createFont().apply { bold = true }
+            setFont(font)
+            alignment = HorizontalAlignment.CENTER
+            verticalAlignment = VerticalAlignment.CENTER
+        }
+
+        val headers = listOf("DI", "名称", "规格", "型号", "厂家", "注册证号", "物料编码", "单位", "分类编码", "数据来源")
+        val headerRow = sheet.createRow(0)
+        headers.forEachIndexed { i, h ->
+            val cell = headerRow.createCell(i).apply { setCellValue(h); cellStyle = headerStyle }
+            sheet.setColumnWidth(i, 4000)
+        }
+
+        products.forEachIndexed { rowIdx, p ->
+            val row = sheet.createRow(rowIdx + 1)
+            row.createCell(0).setCellValue(p.di)
+            row.createCell(1).setCellValue(p.productName)
+            row.createCell(2).setCellValue(p.specification ?: "")
+            row.createCell(3).setCellValue(p.model ?: "")
+            row.createCell(4).setCellValue(p.manufacturer)
+            row.createCell(5).setCellValue(p.registrationCert ?: "")
+            row.createCell(6).setCellValue(p.materialCode ?: "")
+            row.createCell(7).setCellValue(p.unit ?: "")
+            row.createCell(8).setCellValue(p.categoryCode ?: "")
+            row.createCell(9).setCellValue(p.source)
+        }
+
+        workbook.write(outputStream)
+        workbook.close()
     }
 
     // ==========================================

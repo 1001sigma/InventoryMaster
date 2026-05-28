@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.inventorymaster.data.dto.SessionDto
 import com.example.inventorymaster.data.entity.InventorySession
-import com.example.inventorymaster.data.entity.SessionWithProgress
+import com.example.inventorymaster.data.model.SessionWithProgress
 import com.example.inventorymaster.data.repository.InventoryRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

@@ -1,6 +1,6 @@
 package com.example.inventorymaster
 
-import com.example.inventorymaster.utils.CalcEngine
+import com.example.inventorymaster.ui.CalcEngine
 import org.junit.Assert.assertEquals
 import org.junit.Test
 

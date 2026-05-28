@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Point
 import android.graphics.Rect
 import android.util.Log
+import com.example.inventorymaster.utils.Gs1Parser
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
@@ -40,7 +41,6 @@ class QRCodeScannerUtil {
         targetList: List<String>? = null
     ): List<GlobalBarcode> = withContext(Dispatchers.Default) {
 
-        // 1. 调用滑动窗口切片解析 (复用你写好的算法)
         val rawBarcodes = decodeBitmapByTiling(originalImage)
 
         // 2. 执行单据核对逻辑
@@ -139,18 +139,21 @@ class QRCodeScannerUtil {
             return barcodes
         }
 
-        // 模式 B：提供了单据，进行严格校验
-        // 考虑到单据中可能有重复的物料 (如 20个一模一样的码)，我们需要一个可变副本来扣减
+        // 模式 B：提供了单据，DI + 批号双匹配
+        // targetList 每个元素为 "DI|BATCH"，扫码条码用 Gs1Parser 解析后构建同样 key 比对
         val remainingTargets = targetList.toMutableList()
 
         for (barcode in barcodes) {
-            val matchIndex = remainingTargets.indexOf(barcode.displayValue)
+            val parseResult = Gs1Parser.parse(barcode.displayValue)
+            val di = parseResult.di ?: ""
+            val batch = parseResult.batch ?: ""
+            val key = "$di|$batch"
+
+            val matchIndex = remainingTargets.indexOfFirst { it == key }
             if (matchIndex != -1) {
-                // 在单据中找到了，标记为匹配，并从剩余单据池中扣除一个额度
                 barcode.status = ScanStatus.MATCHED
                 remainingTargets.removeAt(matchIndex)
             } else {
-                // 单据中不存在，或者数量已经超出了单据要求，标记为异常多出
                 barcode.status = ScanStatus.MISMATCHED
             }
         }
@@ -167,6 +170,82 @@ class QRCodeScannerUtil {
                     continuation.resumeWith(Result.success(emptyList()))
                 }
         }
+
+    /**
+     * 新增：局部切片放大解析
+     * @param originalImage 原始大图
+     * @param centerX 点击的原图 X 坐标
+     * @param centerY 点击的原图 Y 坐标
+     * @param targetList 单据池（用于状态判定）
+     */
+    suspend fun processLocalCropRescan(
+        originalImage: Bitmap,
+        centerX: Float,
+        centerY: Float,
+        targetList: List<String>?,
+        cropSize: Int = 300,   // 切片大小 400x400
+        scaleFactor: Float = 3.0f // 放大倍数
+    ): GlobalBarcode? = withContext(Dispatchers.Default) {
+
+        // 1. 计算裁剪边界 (防止越界)
+        val startX = max(0, (centerX - cropSize / 2).toInt())
+        val startY = max(0, (centerY - cropSize / 2).toInt())
+        val endX = min(originalImage.width, (centerX + cropSize / 2).toInt())
+        val endY = min(originalImage.height, (centerY + cropSize / 2).toInt())
+
+        val width = endX - startX
+        val height = endY - startY
+        if (width <= 0 || height <= 0) return@withContext null
+
+        // 2. 裁剪并放大
+        val croppedBitmap = Bitmap.createBitmap(originalImage, startX, startY, width, height)
+        val matrix = android.graphics.Matrix().apply { postScale(scaleFactor, scaleFactor) }
+        val scaledBitmap = Bitmap.createBitmap(croppedBitmap, 0, 0, width, height, matrix, false)//使用最近邻插值Nearest-Neighbor
+
+        val inputImage = InputImage.fromBitmap(scaledBitmap, 0)
+
+        // 3. 扫描局部图像
+        val localBarcodes = scanSingleImage(inputImage)
+
+        croppedBitmap.recycle()
+        if (scaledBitmap != croppedBitmap) scaledBitmap.recycle()
+
+        if (localBarcodes.isEmpty()) return@withContext null
+
+        // 4. 取第一个扫出来的结果，并把坐标映射回原大图
+        val barcode = localBarcodes.first()
+        val value = barcode.displayValue ?: return@withContext null
+        val localBox = barcode.boundingBox ?: return@withContext null
+        val localCorners = barcode.cornerPoints ?: return@withContext null
+
+        // 反向除以放大倍数，加上起始偏移量
+        val globalBox = Rect(
+            (localBox.left / scaleFactor).toInt() + startX,
+            (localBox.top / scaleFactor).toInt() + startY,
+            (localBox.right / scaleFactor).toInt() + startX,
+            (localBox.bottom / scaleFactor).toInt() + startY
+        )
+        val globalCorners = localCorners.map {
+            Point((it.x / scaleFactor).toInt() + startX, (it.y / scaleFactor).toInt() + startY)
+        }.toTypedArray()
+
+        val globalBarcode = GlobalBarcode(
+            originalBarcode = barcode,
+            displayValue = value,
+            globalBoundingBox = globalBox,
+            globalCornerPoints = globalCorners,
+            globalCenterX = globalBox.centerX(),
+            globalCenterY = globalBox.centerY()
+        )
+
+        // 5. 状态分配
+        assignStatusByTarget(listOf(globalBarcode), targetList).firstOrNull()
+    }
+
+    /**
+     * 图像预处理管线：灰度化 → 直方图均衡 → 锐化
+     * 解决拍照场景下因光照不均、对比度低、轻微模糊导致的识别率低问题
+     */
 
     fun close() {
         barcodeScanner.close()

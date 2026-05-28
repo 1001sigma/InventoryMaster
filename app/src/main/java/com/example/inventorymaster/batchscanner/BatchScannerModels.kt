@@ -13,7 +13,7 @@ enum class ScanStatus {
 
 // 全局条码数据类（包含原图绝对坐标和业务状态）
 data class GlobalBarcode(
-    val originalBarcode: Barcode,
+    val originalBarcode: Barcode?,
     val displayValue: String,
     val globalBoundingBox: Rect,
     val globalCornerPoints: Array<Point>,

@@ -12,14 +12,17 @@ import com.example.inventorymaster.data.dto.SyncData
 import com.example.inventorymaster.data.dto.toDto
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.entity.ProductBase
-import com.example.inventorymaster.data.entity.SessionWithProgress
+import com.example.inventorymaster.data.model.SessionWithProgress
 import com.example.inventorymaster.data.entity.StockRecord
-import com.example.inventorymaster.data.entity.StockRecordCombined
+import com.example.inventorymaster.data.model.StockRecordCombined
 import com.example.inventorymaster.data.model.ConflictAction
 import com.example.inventorymaster.data.model.ProductConflict
 import com.example.inventorymaster.data.network.InventoryApiService
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
  * 库存仓库实现类
@@ -103,6 +106,30 @@ class InventoryRepositoryImpl(
     override suspend fun searchProducts(query: String) = productDao.searchProducts(query)
     override suspend fun insertProduct(product: ProductBase) = productDao.insertProduct(product)
     override suspend fun updateProduct(product: ProductBase) { productDao.updateProduct(product) }
+    override suspend fun getAllProducts() = productDao.getAllProducts()
+    override suspend fun saveProductsOnly(products: List<ProductBase>) {
+        for (prod in products) {
+            val cleanDi = prod.di.trim()
+            val safeProd = prod.copy(di = cleanDi)
+            val existing = productDao.getProductByDi(cleanDi)
+            if (existing != null) productDao.updateProduct(safeProd)
+            else productDao.insertProduct(safeProd)
+        }
+    }
+    override suspend fun deleteProductByDi(di: String) {
+        try {
+            productDao.deleteProductByDi(di)
+        } catch (e: Exception) {
+            throw Exception("产品 $di 有关联的库存记录，无法删除")
+        }
+    }
+    override suspend fun deleteProductsByDi(diList: List<String>) {
+        try {
+            productDao.deleteProductsByDi(diList)
+        } catch (e: Exception) {
+            throw Exception("所选产品中有关联库存记录的，无法删除")
+        }
+    }
 
     override suspend fun checkProductConflicts(newProducts: List<ProductBase>): List<ProductConflict> {
         val conflictList = mutableListOf<ProductConflict>()
@@ -344,7 +371,7 @@ class InventoryRepositoryImpl(
 
             // 3.3 打包
             val pushPackage = PushRequest(
-                records = dirtyRecords,
+                records = dirtyRecords.map { it.toDto()},
                 products = relatedProducts
             )
             // 3. 发送数据
@@ -528,7 +555,7 @@ class InventoryRepositoryImpl(
                                 sessionId = sessionId,
                                 syncStatus = 0
                             )
-                            stockRecordDao.updateRecord(recordToInsert)
+                            stockRecordDao.insertRecord(recordToInsert)
                         }
                     }
                     // 更新时间戳
@@ -576,6 +603,63 @@ class InventoryRepositoryImpl(
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            Result.failure(e)
+        }
+    }
+
+    // ============================================================
+    // 🆕 Python 本地网关 (端口 8000) 业务对接
+    // ============================================================
+    override suspend fun fetchPythonTaskList(): Result<List<com.example.inventorymaster.data.network.TaskSummary>> {
+        return try {
+            val ip = settingsRepository.getServerIp()
+            if (ip.isBlank()) return Result.failure(Exception("未设置服务器 IP"))
+
+            val api = com.example.inventorymaster.data.network.TaskApiService.create(ip)
+            val response = api.getTaskList()
+
+            if (response.isSuccessful && response.body()?.status == "success") {
+                Result.success(response.body()!!.data)
+            } else {
+                Result.failure(Exception("拉取列表失败: HTTP ${response.code()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun fetchPythonTaskDetail(documentId: String): Result<com.example.inventorymaster.batchscanner.TargetDocument> {
+        return try {
+            val ip = settingsRepository.getServerIp()
+            val api = com.example.inventorymaster.data.network.TaskApiService.create(ip)
+            val response = api.getTaskDetail(documentId)
+
+            if (response.isSuccessful && response.body()?.status == "success") {
+                Result.success(response.body()!!.data)
+            } else {
+                Result.failure(Exception("获取单据明细失败"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun uploadPythonTaskPdf(documentIds: String, file: java.io.File): Result<String> {
+        return try {
+            val ip = settingsRepository.getServerIp()
+            val api = com.example.inventorymaster.data.network.TaskApiService.create(ip)
+
+            val requestFile = file.asRequestBody("application/pdf".toMediaTypeOrNull())
+            val body = okhttp3.MultipartBody.Part.createFormData("file", file.name, requestFile)
+            val idBody = documentIds.toRequestBody("text/plain".toMediaTypeOrNull())
+
+            val response = api.uploadPdfResult(idBody, body)
+            if (response.isSuccessful && response.body()?.status == "success") {
+                Result.success("归档成功")
+            } else {
+                Result.failure(Exception("归档失败: ${response.code()}"))
+            }
+        } catch (e: Exception) {
             Result.failure(e)
         }
     }

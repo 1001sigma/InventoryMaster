@@ -67,6 +67,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import com.example.inventorymaster.ui.theme.StatusSuccess
+import com.example.inventorymaster.ui.theme.StatusWarning
+import com.example.inventorymaster.ui.theme.StatusError
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
@@ -74,7 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.inventorymaster.batchscanner.BatchScannerScreen
 import com.example.inventorymaster.data.entity.InventorySession
-import com.example.inventorymaster.data.entity.SessionWithProgress
+import com.example.inventorymaster.data.model.SessionWithProgress
 import com.example.inventorymaster.ui.analyzer.ScanScreen
 import com.example.inventorymaster.ui.session.CloudTaskDialog
 import com.example.inventorymaster.utils.NetworkUtils
@@ -149,7 +152,7 @@ fun SessionListScreen(
         if (sessionState.sessions.isEmpty()) {
             // 空状态提示
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("暂无任务，请点击右下角 + 号创建", color = Color.Gray)
+                Text("暂无任务，请点击右下角 + 号创建", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else {
             LazyColumn(
@@ -238,7 +241,7 @@ fun SessionListScreen(
 
                 // ================= 新增：选项 D: 新建批量/高级盘点 =================
                 DropdownMenuItem(
-                    text = { Text("新建批量盘点(GS1)") },
+                    text = { Text("新建单据核对(GS1)") },
                     leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null) }, // 你可以换成你喜欢的图标
                     onClick = {
                         showFabMenu = false
@@ -294,7 +297,7 @@ fun SessionListScreen(
     if (showDeleteConfirm && selectedSession != null) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
-            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = Color.Red) },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
             title = { Text("⚠️ 危险操作") },
             text = { Text("确定要删除任务【${selectedSession!!.name}】吗？\n\n此操作将永久删除该任务下的所有库存记录，不可恢复！") },
             confirmButton = {
@@ -453,9 +456,9 @@ fun SessionItem(
     val session = item.session
     val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     val statusColor = when (session.status) {
-        0 -> Color(0xFF4CAF50) // 绿: 进行中
-        1 -> Color(0xFFFF9800) // 橙: 已归档
-        2 -> Color(0xFFF44336) // 红: 已锁定
+        0 -> StatusSuccess  // 进行中
+        1 -> StatusWarning  // 已归档
+        2 -> StatusError    // 已锁定
         else -> Color.Gray
     }
 
@@ -474,8 +477,8 @@ fun SessionItem(
                 onClick = onClick,
                 onLongClick = onLongClick
             ),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = BorderStroke(1.dp, Color(0xFFF0F0F0)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Box(modifier = Modifier.fillMaxWidth()) {
@@ -522,7 +525,7 @@ fun SessionItem(
                     Text(
                         text = sdf.format(Date(session.date)),
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     // 显示具体的进度数字和百分比文本
@@ -538,7 +541,7 @@ fun SessionItem(
                         Text(
                             text = "暂无库存数据",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -615,8 +618,8 @@ fun SessionActionDialog(
                 } else {
                     // 如果已锁定，显示一个灰色的不可点选项提示
                     ListItem(
-                        headlineContent = { Text("删除任务", color = Color.Gray) },
-                        supportingContent = { Text("请先解锁后才能删除", color = Color.Gray) }
+                        headlineContent = { Text("删除任务", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        supportingContent = { Text("请先解锁后才能删除", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     )
                 }
             }
@@ -704,26 +707,26 @@ fun EnhancedQRCodeDialog(
                 Text(
                     text = "Data: $content", // 显示原始内容方便排查
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color.LightGray
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 if (content.contains("|")) {
                     Text(
                         "✅ 已包含 IP，扫码即连",
-                        color = Color(0xFF4CAF50),
+                        color = StatusSuccess,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 } else {
                     Text(
                         "❌ 未包含 IP，扫码后需手动输入",
-                        color = Color.Red,
+                        color = StatusError,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
                 if (missingIpReason != null) {
                     Text(
                         "($missingIpReason)",
-                        color = Color.Gray,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall
                     )
                 }

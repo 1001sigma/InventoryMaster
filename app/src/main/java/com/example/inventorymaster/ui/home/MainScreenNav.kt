@@ -1,6 +1,8 @@
 package com.example.inventorymaster.ui.home
 
 import android.net.Uri
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.padding
 import java.net.URLEncoder
 import androidx.compose.material.icons.Icons
@@ -10,6 +12,9 @@ import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -23,10 +28,12 @@ import com.example.inventorymaster.viewmodel.InventoryViewModel
 import com.example.inventorymaster.viewmodel.SessionViewModel
 import com.example.inventorymaster.viewmodel.SettingsViewModel
 import com.example.inventorymaster.viewmodel.SyncViewModel
+import com.example.inventorymaster.viewmodel.AppViewModelFactory
 import androidx.navigation.navigation
 import com.example.inventorymaster.batchscanner.BatchScannerScreen
 import com.example.inventorymaster.batchscanner.InventoryTaskDetailScreen
 import com.example.inventorymaster.ui.analyzer.ScanScreen
+import com.example.inventorymaster.R
 
 // 记得导入你原本的 HomeScreen，我们稍后会用到它
 
@@ -37,6 +44,7 @@ fun MainScreen(
     inventoryViewModel: InventoryViewModel,
     settingsViewModel: SettingsViewModel,
     syncViewModel: SyncViewModel,
+    appViewModelFactory: AppViewModelFactory,
     onSessionClick: (Long) -> Unit
 ) {
     val navController = rememberNavController()
@@ -51,63 +59,127 @@ fun MainScreen(
     Scaffold(
         topBar = {
             if (!isInBatchScanFlow) {
-                TopAppBar(
+                CenterAlignedTopAppBar(
                     title = {
-                        Text(text = when (currentRoute) {
-                            "home" -> "\uD83D\uDCE6 库存盘点任务"
-                            "products" -> "\uD83D\uDCDA 基础产品库"
-                            "settings" -> "⚙\uFE0F 系统设置"
+                        Text(
+                            text = when (currentRoute) {
+                            "home" -> " 库存盘点任务"
+                            "products" -> " 基础产品库"
+                            "settings" -> " 系统设置"
                             else -> "库存管家"
-                        })
+                            },
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface
                     )
                 )
             }
         },
         bottomBar = {
             if (!isInBatchScanFlow) {
-                NavigationBar {
+                NavigationBar (
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    // 优化4：将 tonalElevation 设为 0.dp 或极小值，去掉默认的淡淡灰色蒙层，极致通透
+                    tonalElevation = 0.dp
+                ) {
+                    val isHomeSelected = currentRoute == "home"
                     // 1. 列表页
                     NavigationBarItem(
-                        icon = { Icon(Icons.Default.ChecklistRtl, contentDescription = "任务") },
-                        label = { Text("任务") },
-                        selected = currentRoute == "home",
+                        selected = isHomeSelected,
                         onClick = {
                             navController.navigate("home") {
                                 popUpTo(navController.graph.startDestinationId) { saveState = true }
                                 launchSingleTop = true
                                 restoreState = true
                             }
-                        }
+                        },
+                        icon = {
+                            // 🌟 预留位：在这里替换你的图标
+                            Icon(
+                                painter = if (isHomeSelected) {
+                                    painterResource(id = R.drawable.todo_fill) // TODO: 替换为你下载的【面性/实心】任务图标
+                                } else {
+                                    painterResource(id = R.drawable.todo_line) // TODO: 替换为你下载的【线性/空心】任务图标
+                                },
+                                contentDescription = "任务"
+                            )
+                        },
+                        label = { Text("任务") },
+                        // 优化5：精细控制各个状态的颜色对比度
+                        colors = NavigationBarItemDefaults.colors(
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer, // 选中的药丸底色
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer, // 选中时的图标颜色（深色）
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface, // 选中时的文字颜色（加深）
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant, // 未选中的图标颜色（淡灰）
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant // 未选中的文字颜色（淡灰）
+                        )
                     )
+
                     // 2. 产品字典页 (原悬浮按钮功能)
+                    val isProductsSelected = currentRoute == "products"
                     NavigationBarItem(
-                        icon = { Icon(Icons.Default.Storage, contentDescription = "产品库") },
-                        label = { Text("产品库") },
-                        selected = currentRoute == "products",
+                        selected = isProductsSelected,
                         onClick = {
                             navController.navigate("products") {
                                 popUpTo(navController.graph.startDestinationId) { saveState = true }
                                 launchSingleTop = true
                                 restoreState = true
                             }
-                        }
+                        },
+                        icon = {
+                            // 🌟 预留位：在这里替换你的图标
+                            Icon(
+                                painter = if (isProductsSelected) {
+                                    painterResource(id = R.drawable.database_2_fill) // TODO: 替换为你下载的【面性/实心】任务图标
+                                } else {
+                                    painterResource(id = R.drawable.database_2_line) // TODO: 替换为你下载的【线性/空心】任务图标
+                                },
+                                contentDescription = "产品库"
+                            )
+                        },
+                        label = { Text("产品库") },
+                        colors = NavigationBarItemDefaults.colors(
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     )
                     // 3. 设置页
+                    val isSettingsSelected = currentRoute == "settings"
                     NavigationBarItem(
-                        icon = { Icon(Icons.Default.Settings, contentDescription = "设置") },
-                        label = { Text("设置") },
-                        selected = currentRoute == "settings",
+                        selected = isSettingsSelected,
                         onClick = {
                             navController.navigate("settings") {
                                 popUpTo(navController.graph.startDestinationId) { saveState = true }
                                 launchSingleTop = true
                                 restoreState = true
                             }
-                        }
+                        },
+                        icon = {
+                            // 🌟 预留位：在这里替换你的图标
+                            Icon(
+                                painter = if (isSettingsSelected) {
+                                    painterResource(id = R.drawable.settings_3_fill) // TODO: 替换为你下载的【面性/实心】任务图标
+                                } else {
+                                    painterResource(id = R.drawable.settings_3_line) // TODO: 替换为你下载的【线性/空心】任务图标
+                                },
+                                contentDescription = "设置"
+                            )
+                        },
+                        label = { Text("设置") },
+                        colors = NavigationBarItemDefaults.colors(
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     )
                 }
             }
@@ -121,8 +193,11 @@ fun MainScreen(
             modifier = if (isInBatchScanFlow) Modifier else Modifier.padding(innerPadding)
         ) {
             // 页面 A: 列表 (暂时先用 Text 占位，确认导航通了再搬代码)
-            composable("home") {
-                // TODO: 稍后在这里调用原来的 HomeScreen
+            composable(
+                route = "home",
+                enterTransition = { fadeIn(initialAlpha = 0.4f) },
+                exitTransition = { fadeOut(targetAlpha = 0.4f) }
+            ) {
                 SessionListScreen(
                     sessionViewModel = sessionViewModel,
                     inventoryViewModel = inventoryViewModel, // 传进去，因为首页的大FAB需要用
@@ -135,8 +210,11 @@ fun MainScreen(
             }
 
             // 页面 B: 任务中心 (原悬浮按钮内容)
-            composable("products") {
-                // TODO: 稍后在这里写 TaskCenterScreen
+            composable(
+                route = "products",
+                enterTransition = { fadeIn(initialAlpha = 0.4f) },
+                exitTransition = { fadeOut(targetAlpha = 0.4f) }
+            ) {
                 ProductManagerScreen( //
                     viewModel = inventoryViewModel
                 )
@@ -144,8 +222,11 @@ fun MainScreen(
 
 
             // 页面 C: 设置
-            composable("settings") {
-                // TODO: 稍后在这里写 SettingsScreen
+            composable(
+                route = "settings",
+                enterTransition = { fadeIn(initialAlpha = 0.4f) },
+                exitTransition = { fadeOut(targetAlpha = 0.4f) }
+            ) {
                 SettingsScreen(viewModel = settingsViewModel)
             }
 
@@ -153,13 +234,15 @@ fun MainScreen(
             navigation(route = "batch_scan_flow", startDestination = "taskDetail") {
 
                 // 页面 A: 查验详情UI (大表单)
-                composable("taskDetail") { backStackEntry ->
-                    // 核心魔法：把 ViewModel 的生命周期绑定到 "batch_scan_flow" 这个流程上
-                    // 只要你不退出这个大流程，相机和表单之间怎么来回跳，数据都在！退回主页则自动销毁。
+                composable(
+                    route = "taskDetail",
+                    enterTransition = { fadeIn(initialAlpha = 0.5f) },
+                    exitTransition = { fadeOut(targetAlpha = 0.5f) }
+                ) { backStackEntry ->
                     val parentEntry = remember(backStackEntry) {
                         navController.getBackStackEntry("batch_scan_flow")
                     }
-                    val mainVM: InventoryMainViewModel = viewModel(parentEntry)
+                    val mainVM: InventoryMainViewModel = viewModel(parentEntry, factory = appViewModelFactory)
 
                     InventoryTaskDetailScreen(
                         viewModel = mainVM,
@@ -192,40 +275,45 @@ fun MainScreen(
                             nullable = true
                             defaultValue = null
                         }
-                    )
+                    ),
+                    enterTransition = { fadeIn(initialAlpha = 0.5f) },
+                    exitTransition = { fadeOut(targetAlpha = 0.5f) }
                 ) { backStackEntry ->
                     // 获取跟 taskDetail 同一个 ViewModel 实例
                     val parentEntry = remember(backStackEntry) {
                         navController.getBackStackEntry("batch_scan_flow")
                     }
-                    val mainVM: InventoryMainViewModel = viewModel(parentEntry)
+                    val mainVM: InventoryMainViewModel = viewModel(parentEntry, factory = appViewModelFactory)
 
                     // 从导航参数中解析传入的图片 Uri（可选）
                     val inputUriStr = backStackEntry.arguments?.getString("inputUri")
                     val inputUri = inputUriStr?.let { Uri.parse(it) }
 
+                    // 从当前单据提取 DI 列表，供扫码器核对（不在单据内的码打叉）
+                    val targetDiList = mainVM.getTargetDiList()
+
                     BatchScannerScreen(
                         inputUri = inputUri,
-                        targetList = null,
-                        onComplete = { results, bitmap ->
-                            // 1. 把相机拍到的单张图片包装成 List，连同条码丢给 ViewModel 解析
-                            mainVM.processScannerResults(listOf(bitmap), results)
-
-                            // 2. 数据处理完，安全退回表单详情页
+                        targetList = targetDiList,
+                        onComplete = { results, bitmap, barcodes ->
+                            mainVM.processScannerResults(listOf(bitmap), results, barcodes)
                             navController.popBackStack()
                         },
                         onClose = { navController.popBackStack() }
                     )
                 }
 
-                // 页面 C: 单码相机工具
                 // 页面 C: 单码相机工具 (ScanScreen)
-                composable("singleCamera") { backStackEntry ->
+                composable(
+                    route = "singleCamera",
+                    enterTransition = { fadeIn(initialAlpha = 0.5f) },
+                    exitTransition = { fadeOut(targetAlpha = 0.5f) }
+                ) { backStackEntry ->
                     // 1. 获取共享的 ViewModel
                     val parentEntry = remember(backStackEntry) {
                         navController.getBackStackEntry("batch_scan_flow")
                     }
-                    val mainVM: InventoryMainViewModel = viewModel(parentEntry)
+                    val mainVM: InventoryMainViewModel = viewModel(parentEntry, factory = appViewModelFactory)
 
                     // 2. 调用你的单码扫码屏幕
                     // 注意这里可能需要 import com.example.inventorymaster.ui.analyzer.ScanScreen

@@ -8,7 +8,7 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import com.example.inventorymaster.data.entity.StockRecord
-import com.example.inventorymaster.data.entity.StockRecordCombined
+import com.example.inventorymaster.data.model.StockRecordCombined
 import kotlinx.coroutines.flow.Flow
 
 @Dao

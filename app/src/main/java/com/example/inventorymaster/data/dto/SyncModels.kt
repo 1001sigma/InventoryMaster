@@ -50,7 +50,7 @@ data class StockRecordDto(
 
 //增量上传的专用请求包
 data class PushRequest(
-    val records: List<StockRecord>, // 或者 StockRecordDto，取决于你API定义，你目前用的是 Entity
+    val records: List< StockRecordDto>, // 或者 StockRecordDto，取决于你API定义，你目前用的是 Entity
     val products: List<ProductDto>  // 顺便带上产品资料
 )
 

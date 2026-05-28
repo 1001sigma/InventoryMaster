@@ -35,4 +35,21 @@ class SettingsViewModel(private val repository: SettingsRepository) : ViewModel(
     fun setThemeMode(mode: Int) {
         viewModelScope.launch { repository.updateThemeMode(mode) }
     }
+
+    fun setBarcodeFrameWidth(w: Int) {
+        viewModelScope.launch { repository.updateBarcodeFrameWidth(w) }
+    }
+    fun setBarcodeFrameHeight(h: Int) {
+        viewModelScope.launch { repository.updateBarcodeFrameHeight(h) }
+    }
+    fun setOcrFrameWidth(w: Int) {
+        viewModelScope.launch { repository.updateOcrFrameWidth(w) }
+    }
+    fun setOcrFrameHeight(h: Int) {
+        viewModelScope.launch { repository.updateOcrFrameHeight(h) }
+    }
+
+    fun setServerIp(ip: String) {
+        viewModelScope.launch { repository.updateServerIp(ip) }
+    }
 }

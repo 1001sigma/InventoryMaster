@@ -38,7 +38,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -61,7 +60,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -70,6 +69,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,9 +88,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -100,8 +101,14 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.UserSettings
+import com.example.inventorymaster.ui.theme.DarkBackground
+import com.example.inventorymaster.ui.theme.DarkSurfaceVariant
+import com.example.inventorymaster.ui.theme.ScannerCorner
+import com.example.inventorymaster.ui.theme.ScannerLine
+import com.example.inventorymaster.ui.theme.StatusSuccess
 import com.example.inventorymaster.utils.JiebaUtils
 import com.example.inventorymaster.utils.RecognitionUtils
+import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
@@ -123,17 +130,20 @@ fun ScanScreen(
     val isSimpleMode = userSettings.isSimpleMode
     val showOcrMask = userSettings.showOcrMask
     val enableMultiScan = userSettings.enableMultiScan
+    val barcodeFrameW = userSettings.barcodeFrameWidth
+    val barcodeFrameH = userSettings.barcodeFrameHeight
+    val ocrFrameW = userSettings.ocrFrameWidth
+    val ocrFrameH = userSettings.ocrFrameHeight
 
     // --- 2. 状态管理 ---
     var scanMode by remember { mutableIntStateOf(0) } // 0 = 扫码, 1 = 识字
     var isTorchOn by remember { mutableStateOf(false) }
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
 
+    // [新增] 保存 PreviewView 的引用
+    var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
     // 相机执行器 (用于分析线程)
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
-
-    // OCR 触发开关 (AtomicBoolean 线程安全)
-    val isOcrCaptureRequested = remember { AtomicBoolean(false) }
 
     // 结果状态
     var rawOcrResult by remember { mutableStateOf<Text?>(null) }
@@ -158,61 +168,86 @@ fun ScanScreen(
     // --- 3. 分析器组装 (Analyzer Assembly) ---
 
     // A. 预先构建 ImageAnalysis UseCase (关键：配置高分辨率)
+    val targetResolution = remember { android.util.Size(1280, 720) }
+
+    // A. 预先构建 ImageAnalysis
     val imageAnalysis = remember {
         ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            // 【重点优化】强制使用 720P (1280x720)，解决医疗长条码识别慢的问题
-            .setTargetResolution(android.util.Size(1280, 720))
+            .setTargetResolution(targetResolution) // 使用统一分辨率
             .build()
     }
 
-    // B. 实例化 BarcodeAnalyzer (使用上一步写的类)
+    // ==================== 替换区域开始 ====================
+
+    // B. 实例化重构后的 BarcodeAnalyzer
+    // 在 ScanScreen.kt 里面找到这段并替换：
     val barcodeAnalyzer = remember(enableMultiScan) {
         BarcodeAnalyzer(
-            isMultiMode = enableMultiScan, // 传入设置开关
+            isMultiMode = enableMultiScan,
             scope = scope,
             onScanResult = { result ->
-                // 单码回调：切回主线程处理
                 scope.launch { onScanResult(result) }
             },
             onMultiScanResult = { bitmap, barcodes ->
-                // 多码回调：定格画面
                 frozenBitmap = bitmap
                 frozenBarcodes = barcodes
             }
         )
     }
 
-    // C. 实例化 TextAnalyzer (使用上一步写的类)
-    val textAnalyzer = remember {
-        TextAnalyzer(
-            isCaptureRequested = isOcrCaptureRequested,
-            onOcrResult = { result ->
-                scope.launch {
-                    if (result.text.isNotBlank()) rawOcrResult = result
-                    else Toast.makeText(context, "未识别到文字", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onError = { error ->
-                scope.launch { Toast.makeText(context, "识别出错: $error", Toast.LENGTH_SHORT).show() }
-            }
-        )
-    }
+    // D. 核心调度逻辑：在每帧图像进来时，动态计算精准坐标并分发给对应的分析器
+    val density = LocalDensity.current
+    var viewWidthPx by remember { mutableFloatStateOf(0f) }
+    var viewHeightPx by remember { mutableFloatStateOf(0f) }
 
-    // D. 核心逻辑：根据 scanMode 自动插拔分析器 (Hot Swap)
-    // 当 scanMode 改变，或定格状态改变时执行
-    LaunchedEffect(scanMode, frozenBitmap) {
+    val barcodeFrameWPx = with(density) { barcodeFrameW.dp.toPx() }
+    val barcodeFrameHPx = with(density) { barcodeFrameH.dp.toPx() }
+    val ocrFrameWPx = with(density) { ocrFrameW.dp.toPx() }
+    val ocrFrameHPx = with(density) { ocrFrameH.dp.toPx() }
+
+    LaunchedEffect(scanMode,
+        frozenBitmap,
+        viewWidthPx,
+        viewHeightPx,
+        barcodeFrameWPx, // 加上这个
+        barcodeFrameHPx
+        ) {
         if (frozenBitmap != null) {
-            // 如果已经定格了，就不需要分析了，移除 analyzer 节省资源
             imageAnalysis.clearAnalyzer()
         } else {
-            // 正常预览状态，根据模式挂载对应的分析器
-            val analyzer = if (scanMode == 0) barcodeAnalyzer else textAnalyzer
-            imageAnalysis.setAnalyzer(cameraExecutor, analyzer)
+            imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                // 如果当前是识字模式，底层分析器直接罢工休息，省 CPU！
+                if (scanMode == 1) {
+                    imageProxy.close()
+                    return@setAnalyzer
+                }
+
+                // === 下面全是扫码模式的逻辑 ===
+                val rotation = imageProxy.imageInfo.rotationDegrees
+                val isRotated = rotation == 90 || rotation == 270
+                val cropRect = imageProxy.cropRect
+                val imgW = if (isRotated) cropRect.height() else cropRect.width()
+                val imgH = if (isRotated) cropRect.width() else cropRect.height()
+
+                // 条码扫描框的映射逻辑（这部分保留，因为条码依然需要底层扫描）
+                val mappedRect = ScanRegionMapper.getMappedRect( // ⚠️ 注意：如果你把 ScanRegionMapper 删了，这里可以不传 mappedRect，直接扫全图，或者自己单独留一个简易的 BarcodeMapper
+                    frameWidthPx = barcodeFrameWPx,
+                    frameHeightPx = barcodeFrameHPx,
+                    viewWidthPx = viewWidthPx,
+                    viewHeightPx = viewHeightPx,
+                    imageWidth = imgW,
+                    imageHeight = imgH
+                )
+
+                barcodeAnalyzer.targetRegion = mappedRect
+                barcodeAnalyzer.analyze(imageProxy)
+            }
         }
     }
 
-    // --- 4. 辅助功能 Launcher ---
+    // ==================== 替换区域结束 ====================
+    // --- 4. 辅助功能 Launcher (相册 & 词库导入) ---
     val importDictLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             scope.launch {
@@ -240,12 +275,16 @@ fun ScanScreen(
         }
     }
 
-    // --- 5. UI 布局 ---
+    // --- 6. UI 布局 ---
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            // 【修复】防止点击穿透到底层列表
+            .onGloballyPositioned { coordinates ->
+                // 实时获取相机容器的绝对物理像素宽高
+                viewWidthPx = coordinates.size.width.toFloat()
+                viewHeightPx = coordinates.size.height.toFloat()
+            }
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { /* 拦截点击，什么都不做 */ })
             }
@@ -257,11 +296,16 @@ fun ScanScreen(
                 val previewView = PreviewView(ctx).apply {
                     scaleType = PreviewView.ScaleType.FILL_CENTER
                 }
+                // [新增] 存下引用
+                previewViewRef = previewView
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                 cameraProviderFuture.addListener({
                     val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build()
+                    val preview = Preview.Builder()
+                        .setTargetResolution(targetResolution)
+                        .build()
                     preview.setSurfaceProvider(previewView.surfaceProvider)
+
 
                     try {
                         cameraProvider.unbindAll()
@@ -299,13 +343,19 @@ fun ScanScreen(
                 )
             } else {
                 // 正常扫描框
-                ScanOverlay(scanWindowSize = 280.dp, isAnimating = true, showMask = true)
+                ScanOverlay(
+                    windowWidth = barcodeFrameW.dp,
+                    windowHeight = barcodeFrameH.dp,
+                    isAnimating = true,
+                    showMask = true
+                )
             }
         } else {
             // === OCR 模式 ===
             if (showOcrMask) {
                 ScanOverlay(
-                    scanWindowSize = 280.dp,
+                    windowWidth = ocrFrameW.dp,
+                    windowHeight = ocrFrameH.dp,
                     isAnimating = false,
                     showMask = true,
                     cornerColor = Color.White
@@ -323,17 +373,17 @@ fun ScanScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = MaterialTheme.colorScheme.onBackground)
                 }
                 Row {
                     IconButton(onClick = {
                         isTorchOn = !isTorchOn
                         cameraControl?.enableTorch(isTorchOn)
                     }) {
-                        Icon(if (isTorchOn) Icons.Default.FlashOn else Icons.Default.FlashOff, "Torch", tint = Color.White)
+                        Icon(if (isTorchOn) Icons.Default.FlashOn else Icons.Default.FlashOff, "Torch", tint = MaterialTheme.colorScheme.onBackground)
                     }
                     IconButton(onClick = { showSettingsDialog = true }) {
-                        Icon(Icons.Default.Settings, "Settings", tint = Color.White)
+                        Icon(Icons.Default.Settings, "Settings", tint = MaterialTheme.colorScheme.onBackground)
                     }
                 }
             }
@@ -345,7 +395,7 @@ fun ScanScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .background(Color.Black.copy(alpha = 0.5f))
+                    .background(DarkBackground.copy(alpha = 0.6f))
                     .padding(bottom = 30.dp, top = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -366,22 +416,57 @@ fun ScanScreen(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         IconButton(
                             onClick = { galleryLauncher.launch("image/*") },
-                            modifier = Modifier.size(48.dp).background(Color.DarkGray, CircleShape)
-                        ) { Icon(Icons.Default.Image, "Gallery", tint = Color.White) }
-                        Text("相册", color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                            modifier = Modifier.size(48.dp).background(DarkSurfaceVariant, CircleShape)
+                        ) { Icon(Icons.Default.Image, "Gallery", tint = MaterialTheme.colorScheme.onSurface) }
+                        Text("相册", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
                     }
 
                     // 快门键
                     Box(contentAlignment = Alignment.Center) {
-                        Box(modifier = Modifier.size(72.dp).border(4.dp, Color.White, CircleShape))
+                        Box(modifier = Modifier.size(72.dp).border(4.dp, MaterialTheme.colorScheme.onBackground, CircleShape))
                         if (scanMode == 0) {
-                            Box(modifier = Modifier.size(56.dp).background(Color.White.copy(alpha = 0.2f), CircleShape))
+                            Box(modifier = Modifier.size(56.dp).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.2f), CircleShape))
                         } else {
                             Box(
                                 modifier = Modifier
                                     .size(56.dp)
-                                    .background(Color.White, CircleShape)
-                                    .clickable { isOcrCaptureRequested.set(true) } // 触发 OCR
+                                    .background(MaterialTheme.colorScheme.onBackground, CircleShape)
+                                    .clickable { // 【替换逻辑】使用方案 2：PreviewView 直接截图法
+                                        previewViewRef?.bitmap?.let { screenBitmap ->
+                                            // 1. 获取当前设置里的扫描框真实像素
+                                            val frameWPx = with(density) { ocrFrameW.dp.toPx() }
+                                            val frameHPx = with(density) { ocrFrameH.dp.toPx() }
+
+                                            // 2. 因为你的 UI 遮罩是绝对居中的，数学逻辑极其简单：
+                                            val left = ((screenBitmap.width - frameWPx) / 2).toInt().coerceAtLeast(0)
+                                            val top = ((screenBitmap.height - frameHPx) / 2).toInt().coerceAtLeast(0)
+                                            val width = frameWPx.toInt().coerceAtMost(screenBitmap.width - left)
+                                            val height = frameHPx.toInt().coerceAtMost(screenBitmap.height - top)
+
+                                            try {
+                                                // 3. 暴力切图：屏幕上看到什么，就切什么
+                                                val croppedBmp = Bitmap.createBitmap(screenBitmap, left, top, width, height)
+                                                val inputImage = InputImage.fromBitmap(croppedBmp, 0)
+
+                                                // 4. 直接喂给 OCR 工具类
+                                                RecognitionUtils.recognizeText(
+                                                    image = inputImage,
+                                                    onSuccess = { result ->
+                                                        if (result.text.isNotBlank()) {
+                                                            rawOcrResult = result
+                                                        } else {
+                                                            Toast.makeText(context, "未识别到文字", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    },
+                                                    onFailure = { e ->
+                                                        Toast.makeText(context, "识别出错: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                )
+                                            } catch (e: Exception) {
+                                                e.printStackTrace()
+                                            }
+                                        }
+                                    }
                             )
                         }
                     }
@@ -432,12 +517,12 @@ fun ModeButton(text: String, isSelected: Boolean, onClick: () -> Unit) {
     ) {
         Text(
             text = text,
-            color = if (isSelected) Color.White  else Color.Gray,
+            color = if (isSelected) MaterialTheme.colorScheme.onBackground  else Color.Gray.copy(alpha = 0.5f),
             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
             fontSize = 16.sp
         )
         if (isSelected) {
-            Box(modifier = Modifier.padding(top = 4.dp).size(4.dp).background(Color.Yellow, CircleShape))
+            Box(modifier = Modifier.padding(top = 4.dp).size(4.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
         }
     }
 }
@@ -542,16 +627,15 @@ fun restartApp(context: Context) {
 //扫码页面
 @Composable
 fun ScanOverlay(
-    scanWindowSize: Dp = 260.dp, // 扫描框大小
-    isAnimating: Boolean = true, // 是否显示扫描线动画
-    showMask: Boolean = true,    // 是否显示半透明背景遮罩
-    maskColor: Color = Color.Black.copy(alpha = 0.6f), // 遮罩颜色
-    cornerColor: Color = Color(0xFF4E6F80), // 四个角的颜色
-    lineColor: Color = Color(0xFF41B246)    // 扫描线颜色
+    windowWidth: Dp = 260.dp,  // 扫描框宽度
+    windowHeight: Dp = 260.dp, // 扫描框高度
+    isAnimating: Boolean = true,
+    showMask: Boolean = true,
+    maskColor: Color = Color.Black.copy(alpha = 0.6f),
+    cornerColor: Color = ScannerCorner,
+    lineColor: Color = ScannerLine
 ) {
-    // 1. 定义动画 (用于扫描线)
     val infiniteTransition = rememberInfiniteTransition(label = "scanner_anim")
-    // 动画值：从 0f 变到 1f，耗时 2秒，线性移动，反复循环
     val progress by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
@@ -563,30 +647,26 @@ fun ScanOverlay(
     )
 
     Canvas(modifier = Modifier.fillMaxSize()) {
-        // 计算屏幕中心和扫描框的位置
         val canvasWidth = size.width
         val canvasHeight = size.height
-        val windowSizePx = scanWindowSize.toPx()
+        val windowWPx = windowWidth.toPx()
+        val windowHPx = windowHeight.toPx()
 
-        // 扫描框的左上角坐标，使其居中
-        val left = (canvasWidth - windowSizePx) / 2
-        val top = (canvasHeight - windowSizePx) / 2
-        val right = left + windowSizePx
-        val bottom = top + windowSizePx
+        // 扫描框居中
+        val left = (canvasWidth - windowWPx) / 2
+        val top = (canvasHeight - windowHPx) / 2
+        val right = left + windowWPx
+        val bottom = top + windowHPx
 
         // 定义扫描框区域 Rect
 
         // === A. 绘制半透明遮罩 (Mask) ===
         // 原理：在扫描框的 上、下、左、右 画四个矩形
         if (showMask) {
-            // 上
             drawRect(color = maskColor, topLeft = Offset(0f, 0f), size = Size(canvasWidth, top))
-            // 下
             drawRect(color = maskColor, topLeft = Offset(0f, bottom), size = Size(canvasWidth, canvasHeight - bottom))
-            // 左 (注意高度是中间那一段)
-            drawRect(color = maskColor, topLeft = Offset(0f, top), size = Size(left, windowSizePx))
-            // 右
-            drawRect(color = maskColor, topLeft = Offset(right, top), size = Size(canvasWidth - right, windowSizePx))
+            drawRect(color = maskColor, topLeft = Offset(0f, top), size = Size(left, windowHPx))
+            drawRect(color = maskColor, topLeft = Offset(right, top), size = Size(canvasWidth - right, windowHPx))
         }
 
         // === B. 绘制四个角 (Corners) ===
@@ -617,41 +697,35 @@ fun ScanOverlay(
             val trailHeightPx = 35.dp.toPx()
 
             // 计算主扫描线当前的 Y 坐标
-            val lineY = top + (windowSizePx * progress)
+            val lineY = top + (windowHPx * progress)
 
-            // 【关键】使用 clipRect 将绘制区域限制在扫描框内部
-            // 这样当扫描线在顶部时，拖尾不会画到框外面去
             clipRect(
                 left = left,
                 top = top,
                 right = right,
                 bottom = bottom
             ) {
-                // 1. 创建垂直渐变画笔 (从透明 -> 扫描线颜色)
                 val trailBrush = Brush.verticalGradient(
                     colors = listOf(
-                        Color.Transparent, // 顶部：完全透明
-                        lineColor.copy(alpha = 0.7f) // 底部：接近实心颜色 (0.8f 看起来更柔和)
+                        Color.Transparent,
+                        lineColor.copy(alpha = 0.7f)
                     ),
-                    startY = lineY - trailHeightPx, // 渐变起始点 Y (拖尾顶部)
-                    endY = lineY                    // 渐变结束点 Y (扫描线位置)
+                    startY = lineY - trailHeightPx,
+                    endY = lineY
                 )
 
-                // 2. 绘制拖尾矩形
                 drawRect(
                     brush = trailBrush,
                     topLeft = Offset(left, lineY - trailHeightPx),
-                    size = Size(windowSizePx, trailHeightPx)
+                    size = Size(windowWPx, trailHeightPx)
                 )
 
-                // 3. 绘制主扫描线 (领航线，画在拖尾上面，更亮更实)
-                // 为了配合拖尾，这条线最好是全宽度的 (left 到 right)，不要缩进
                 drawLine(
                     color = lineColor,
                     start = Offset(left, lineY),
                     end = Offset(right, lineY),
-                    strokeWidth = 3.dp.toPx(), // 稍微加粗一点主线
-                    cap = StrokeCap.Square // 方头看起来更像一道光束的前沿
+                    strokeWidth = 3.dp.toPx(),
+                    cap = StrokeCap.Square
                 )
             }
         }
@@ -671,6 +745,7 @@ fun FrozenSelectionOverlay(
             .fillMaxSize()
             .background(Color.Black)
     ) {
+        val density = LocalDensity.current
         // [修复 1] 这里不再用 toPx()，而是直接从 constraints 拿像素值 (Int 转 Float)
         // 这样就解决了 "Unresolved reference 'toPx'" 和类型推断错误
         val screenWidth = constraints.maxWidth.toFloat()
@@ -702,9 +777,6 @@ fun FrozenSelectionOverlay(
         // --- B. 绘制半透明遮罩 ---
         Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)))
 
-        // [修复 2] 这里需要用到 LocalDensity 来把算出来的像素坐标转回 Dp
-        val density = LocalDensity.current
-
         // --- C. 绘制按钮 ---
         barcodes.forEach { code ->
             // 还原坐标公式：偏移量 + (归一化坐标 * 显示宽高)
@@ -721,7 +793,7 @@ fun FrozenSelectionOverlay(
                     .size(48.dp)
                     .background(Color.White, CircleShape)
                     .padding(2.dp)
-                    .background(Color(0xFF2E7D32), CircleShape)
+                    .background(StatusSuccess, CircleShape)
                     .clickable { onBarcodeClick(code.rawValue) },
                 contentAlignment = Alignment.Center
             ) {
@@ -748,40 +820,7 @@ fun FrozenSelectionOverlay(
 }
 
 
-//文字识别的文本框模式
-@Composable
-fun OCRResultDialog(
-    text: String,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
-) {
-    var editedText by remember { mutableStateOf(text) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("识别结果") },
-        text = {
-            Column {
-                Text("请确认或编辑识别到的文字：", fontSize = 12.sp, color = Color.Gray)
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = editedText,
-                    onValueChange = { editedText = it },
-                    modifier = Modifier.fillMaxWidth().height(200.dp),
-                    textStyle = TextStyle(fontSize = 14.sp)
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = { onConfirm(editedText) }) {
-                Text("填入")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        }
-    )
-}
 
 
 

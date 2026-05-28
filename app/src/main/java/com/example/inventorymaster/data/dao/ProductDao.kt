@@ -32,6 +32,18 @@ interface ProductDao {
     """)
     suspend fun searchProducts(query: String): List<ProductBase>
 
+    // 5. 获取全部产品 (导出用)
+    @Query("SELECT * FROM product_base ORDER BY productName ASC")
+    suspend fun getAllProducts(): List<ProductBase>
+
+    // 6. 删除产品 (按 DI)
+    @Query("DELETE FROM product_base WHERE di = :di")
+    suspend fun deleteProductByDi(di: String)
+
+    // 7. 批量删除产品
+    @Query("DELETE FROM product_base WHERE di IN (:diList)")
+    suspend fun deleteProductsByDi(diList: List<String>)
+
     // 2. [新增] 安全更新：用于覆盖旧产品 绝对不能用 REPLACE，否则有盘点记录时会闪退！
     @Update
     suspend fun updateProduct(product: ProductBase)

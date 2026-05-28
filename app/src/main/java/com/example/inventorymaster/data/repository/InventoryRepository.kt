@@ -4,10 +4,10 @@ import com.example.inventorymaster.data.dto.SessionDto
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
-import com.example.inventorymaster.data.entity.StockRecordCombined
+import com.example.inventorymaster.data.model.StockRecordCombined
 import com.example.inventorymaster.data.model.ProductConflict
 import kotlinx.coroutines.flow.Flow
-import com.example.inventorymaster.data.entity.SessionWithProgress
+import com.example.inventorymaster.data.model.SessionWithProgress
 
 interface InventoryRepository {
     // Session 相关
@@ -49,6 +49,10 @@ interface InventoryRepository {
     suspend fun saveImportDataWithResolution(finalProducts: List<ProductBase>, records: List<StockRecord>)
 
     suspend fun updateProduct(product: ProductBase)
+    suspend fun getAllProducts(): List<ProductBase>
+    suspend fun saveProductsOnly(products: List<ProductBase>)
+    suspend fun deleteProductByDi(di: String)
+    suspend fun deleteProductsByDi(diList: List<String>)
 
     //上传数据到电脑
     suspend fun exportFullSession(ip: String, sessionId: Long): Result<String>
@@ -69,6 +73,10 @@ interface InventoryRepository {
 
     suspend fun getServerIp(): String
 
+    // --- 新增：Python 本地网关对接接口 ---
+    suspend fun fetchPythonTaskList(): Result<List<com.example.inventorymaster.data.network.TaskSummary>>
+    suspend fun fetchPythonTaskDetail(documentId: String): Result<com.example.inventorymaster.batchscanner.TargetDocument>
+    suspend fun uploadPythonTaskPdf(documentIds: String, file: java.io.File): Result<String>
 
 
 }

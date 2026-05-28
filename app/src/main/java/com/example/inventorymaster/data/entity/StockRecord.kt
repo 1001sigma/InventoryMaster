@@ -6,6 +6,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.inventorymaster.data.model.StockRecordCombined
 
 /**
  * L2 库存实物记录表 (账本表)

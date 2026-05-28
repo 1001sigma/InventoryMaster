@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     id("com.google.devtools.ksp") version "2.0.21-1.0.28"
+    kotlin("plugin.serialization") version "2.0.21" apply false
 }
 
 android {
@@ -62,9 +63,6 @@ dependencies {
     implementation("androidx.room:room-runtime:$room_version")
     implementation("androidx.room:room-ktx:$room_version") // 支持协程
     ksp("androidx.room:room-compiler:$room_version")     // 编译器
-
-    implementation(platform("androidx.compose:compose-bom:2024.02.01"))
-
     // --- 后面会用到的 ViewModel 和 Navigation ---
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.6.2")
     implementation("androidx.navigation:navigation-compose:2.7.5")
@@ -102,5 +100,6 @@ dependencies {
     // DataStore Preferences
     implementation("androidx.datastore:datastore-preferences:1.2.0")
 
-
+    // 👇 3. 新增：kotlinx.serialization 的 JSON 核心解析库
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 }

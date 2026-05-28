@@ -12,7 +12,7 @@ import com.example.inventorymaster.data.entity.ExpiryState
 import com.example.inventorymaster.data.entity.HighlightField
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
-import com.example.inventorymaster.data.entity.StockRecordCombined
+import com.example.inventorymaster.data.model.StockRecordCombined
 import com.example.inventorymaster.data.entity.StockRecordUiModel
 import com.example.inventorymaster.data.model.ConflictAction
 import com.example.inventorymaster.data.model.ProductConflict
@@ -20,6 +20,7 @@ import com.example.inventorymaster.data.repository.InventoryRepository
 import com.example.inventorymaster.utils.BatchCodeProcessor
 import com.example.inventorymaster.utils.ExcelUtils
 import com.example.inventorymaster.utils.Gs1Parser
+import com.example.inventorymaster.utils.ProductJsonUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,7 +49,10 @@ data class InventoryUiState(
     val autoPushSessionId: Long? = null,
     // 👇 新增：DI 校验状态和错误列表
     val isDiValidationEnabled: Boolean = false, // 开关状态
-    val invalidDiList: List<StockRecordCombined> = emptyList() // 校验失败的清单，只要不为空，UI就弹窗
+    val invalidDiList: List<StockRecordCombined> = emptyList(), // 校验失败的清单，只要不为空，UI就弹窗
+    // 产品库删除模式
+    val isProductDeleteMode: Boolean = false,
+    val selectedProductsForDelete: Set<String> = emptySet()
 )
 
 
@@ -57,6 +61,7 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
     private val _uiState = MutableStateFlow(InventoryUiState())
     private var pendingExcelProducts: List<ProductBase> = emptyList()
     private var pendingExcelRecords: List<StockRecord> = emptyList()
+    private var pendingImportProducts: List<ProductBase> = emptyList()
     private val _searchQuery = MutableStateFlow("")
     // 1. 在 ViewModel 顶部新增一个 StateFlow 来保存当前的搜索关键字
     val searchQuery = _searchQuery.asStateFlow()
@@ -527,6 +532,190 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
         pendingExcelProducts = emptyList()
         pendingExcelRecords = emptyList()
     }
+
+    // =========================================================================
+    // region 产品库导入导出 (Product-only, 不绑定 Session)
+    // =========================================================================
+
+    fun importProductsFromFile(context: Context, uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val mimeType = context.contentResolver.getType(uri) ?: ""
+                val fileName = uri.lastPathSegment ?: ""
+                val products: List<ProductBase> = when {
+                    mimeType.contains("json") || fileName.endsWith(".json") -> {
+                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                            ProductJsonUtils.importFromJson(stream)
+                        } ?: emptyList()
+                    }
+                    else -> {
+                        val result = ExcelUtils.parseExcel(context, uri, 0)
+                        result.products
+                    }
+                }
+
+                if (products.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        _uiState.value = _uiState.value.copy(userMessage = "未解析到任何产品数据")
+                    }
+                    return@launch
+                }
+
+                analyzeProductsImport(products)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(userMessage = "导入失败: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private suspend fun analyzeProductsImport(products: List<ProductBase>) {
+        _uiState.value = _uiState.value.copy(isAnalyzing = true)
+        pendingImportProducts = products
+        val conflicts = repository.checkProductConflicts(products)
+        if (conflicts.isEmpty()) {
+            repository.saveProductsOnly(products)
+            _uiState.value = _uiState.value.copy(isAnalyzing = false, userMessage = "成功导入 ${products.size} 条产品")
+        } else {
+            _uiState.value = _uiState.value.copy(conflictList = conflicts, isAnalyzing = false)
+        }
+    }
+
+    fun confirmProductsResolution() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isAnalyzing = true)
+            val conflicts = _uiState.value.conflictList
+            val finalProducts = pendingImportProducts.toMutableList()
+
+            for (conflict in conflicts) {
+                if (conflict.resolveAction == ConflictAction.IGNORE) {
+                    val index = finalProducts.indexOfFirst { it.di == conflict.di }
+                    if (index != -1) finalProducts[index] = conflict.oldProduct
+                }
+            }
+            repository.saveProductsOnly(finalProducts)
+            _uiState.value = _uiState.value.copy(
+                conflictList = emptyList(),
+                isAnalyzing = false,
+                userMessage = "成功导入 ${finalProducts.size} 条产品"
+            )
+            pendingImportProducts = emptyList()
+        }
+    }
+
+    fun cancelProductsImport() {
+        _uiState.value = _uiState.value.copy(conflictList = emptyList(), isAnalyzing = false)
+        pendingImportProducts = emptyList()
+    }
+
+    fun exportProductsToExcelFile(context: Context, uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val products = repository.getAllProducts()
+                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    ExcelUtils.exportProductsToExcel(outputStream, products)
+                }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(userMessage = "已导出 ${products.size} 条产品")
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(userMessage = "导出失败: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun exportProductsToJsonFile(context: Context, uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val products = repository.getAllProducts()
+                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    ProductJsonUtils.exportToJson(outputStream, products)
+                }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(userMessage = "已导出 ${products.size} 条产品")
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(userMessage = "导出失败: ${e.message}")
+                }
+            }
+        }
+    }
+
+    // endregion
+
+    // =========================================================================
+    // region 产品库增删
+    // =========================================================================
+
+    fun toggleProductDeleteMode() {
+        val current = _uiState.value.isProductDeleteMode
+        _uiState.value = _uiState.value.copy(
+            isProductDeleteMode = !current,
+            selectedProductsForDelete = emptySet()
+        )
+    }
+
+    fun toggleProductSelection(di: String) {
+        val current = _uiState.value.selectedProductsForDelete.toMutableSet()
+        if (current.contains(di)) current.remove(di) else current.add(di)
+        _uiState.value = _uiState.value.copy(selectedProductsForDelete = current)
+    }
+
+    fun addProduct(product: ProductBase) {
+        viewModelScope.launch {
+            try {
+                repository.insertProduct(product)
+                _uiState.value = _uiState.value.copy(userMessage = "已添加产品: ${product.productName}")
+                // 刷新列表
+                val query = _uiState.value.searchQuery
+                if (query.isNotBlank()) searchProducts(query)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _uiState.value = _uiState.value.copy(userMessage = "添加失败: ${e.message}")
+            }
+        }
+    }
+
+    fun deleteSingleProduct(di: String) {
+        viewModelScope.launch {
+            try {
+                repository.deleteProductByDi(di)
+                _uiState.value = _uiState.value.copy(userMessage = "已删除产品")
+                val query = _uiState.value.searchQuery
+                if (query.isNotBlank()) searchProducts(query)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(userMessage = e.message ?: "删除失败")
+            }
+        }
+    }
+
+    fun deleteSelectedProducts() {
+        val selected = _uiState.value.selectedProductsForDelete
+        if (selected.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                repository.deleteProductsByDi(selected.toList())
+                _uiState.value = _uiState.value.copy(
+                    isProductDeleteMode = false,
+                    selectedProductsForDelete = emptySet(),
+                    userMessage = "已删除 ${selected.size} 条产品"
+                )
+                val query = _uiState.value.searchQuery
+                if (query.isNotBlank()) searchProducts(query)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(userMessage = e.message ?: "批量删除失败")
+            }
+        }
+    }
+
+    // endregion
 
     // 👇 新增：手动校验当前列表的所有 DI
     fun validateCurrentTaskDIs() {

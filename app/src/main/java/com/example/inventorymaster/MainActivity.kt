@@ -3,6 +3,8 @@ package com.example.inventorymaster
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -23,6 +25,8 @@ import com.example.inventorymaster.viewmodel.InventoryViewModel
 import com.example.inventorymaster.viewmodel.SessionViewModel
 import com.example.inventorymaster.viewmodel.SettingsViewModel
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.toArgb
+import com.example.inventorymaster.ui.theme.ModernColorSchemes
 import com.example.inventorymaster.viewmodel.SyncViewModel
 
 class MainActivity : ComponentActivity() {
@@ -32,6 +36,7 @@ class MainActivity : ComponentActivity() {
             val app = application as InventoryApplication
             // 1. 先拿到通用的工厂
             val appFactory = AppViewModelFactory(
+                application = application,
                 repository = app.repository,
                 settingsRepository = app.settingsRepository
             )
@@ -46,8 +51,11 @@ class MainActivity : ComponentActivity() {
                 2 -> true  // 强制深色
                 else -> isSystemInDarkTheme() // 跟随系统 (默认)
             }
+            val selectedTheme = ModernColorSchemes.allSchemes.find {
+                it.primary.toArgb().toLong() == settingsState.seedColor
+            } ?: ModernColorSchemes.Blue
             InventoryMasterTheme(
-                seedColor = androidx.compose.ui.graphics.Color(settingsState.seedColor), // 1. 传入当前选中的颜色
+                themeColors = selectedTheme, // 1. 传入当前选中的颜色
                 useDynamicColor = settingsState.useDynamicColor, // 2. 传入动态颜色开关
                 darkTheme = isDarkTheme
             ) {
@@ -61,12 +69,17 @@ class MainActivity : ComponentActivity() {
                     NavHost(navController = navController, startDestination = "home") {
 
                         // 路线 A: 首页
-                        composable("home") {
+                        composable(
+                            route = "home",
+                            enterTransition = { fadeIn(initialAlpha = 0.4f) },
+                            exitTransition = { fadeOut(targetAlpha = 0.4f) }
+                        ) {
                             MainScreen(
                                 inventoryViewModel= inventoryViewModel,
                                 sessionViewModel= sessionViewModel,
                                 settingsViewModel = settingsViewModel,
                                 syncViewModel = syncViewModel,
+                                appViewModelFactory = appFactory,
                                 onSessionClick = { sessionId ->
                                     // 点击列表时，命令司机开车去 inventory 页面，并带上 id
                                     navController.navigate("inventory/$sessionId")
@@ -75,10 +88,11 @@ class MainActivity : ComponentActivity() {
                         }
 
                         // 路线 B: 盘点详情页
-                        // 格式: "inventory/{sessionId}" 表示这个路径接受一个参数
                         composable(
                             route = "inventory/{sessionId}",
-                            arguments = listOf(navArgument("sessionId") { type = NavType.LongType })
+                            arguments = listOf(navArgument("sessionId") { type = NavType.LongType }),
+                            enterTransition = { fadeIn(initialAlpha = 0.4f) },
+                            exitTransition = { fadeOut(targetAlpha = 0.4f) }
                         ) { backStackEntry ->
                             // 取出传递过来的 id
                             val sessionId = backStackEntry.arguments?.getLong("sessionId") ?: 0L

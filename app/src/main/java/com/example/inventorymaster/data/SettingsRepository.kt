@@ -22,7 +22,13 @@ data class UserSettings(
     val showOcrMask: Boolean = true,        // OCR 遮罩
     val enableMultiScan: Boolean = false,    // 多码模式
     // 👇 新增：DI 校验开关状态
-    val enableDiValidation: Boolean = false
+    val enableDiValidation: Boolean = false,
+    // 👇 扫描框尺寸设置
+    val barcodeFrameWidth: Int = 180,       // 扫码框宽度 (dp)
+    val barcodeFrameHeight: Int = 180,      // 扫码框高度 (dp)
+    val ocrFrameWidth: Int = 300,            // OCR 框宽度 (dp)
+    val ocrFrameHeight: Int = 80,          // OCR 框高度 (dp)
+    val serverIp: String = ""              // 服务器 IP 地址
 )
 
 class SettingsRepository(private val context: Context) {
@@ -39,6 +45,11 @@ class SettingsRepository(private val context: Context) {
         val ENABLE_MULTI_SCAN = booleanPreferencesKey("enable_multi_scan")
         // 👇 新增：DI 校验的 Key
         val ENABLE_DI_VALIDATION = booleanPreferencesKey("enable_di_validation")
+        // 👇 扫描框尺寸 Key
+        val BARCODE_FRAME_W = intPreferencesKey("barcode_frame_w")
+        val BARCODE_FRAME_H = intPreferencesKey("barcode_frame_h")
+        val OCR_FRAME_W = intPreferencesKey("ocr_frame_w")
+        val OCR_FRAME_H = intPreferencesKey("ocr_frame_h")
 
         // ============================================================
         // 🆕 网络同步相关 Key（原 SharedPreferences 迁移至 DataStore）
@@ -60,7 +71,13 @@ class SettingsRepository(private val context: Context) {
                 showOcrMask = preferences[Keys.SHOW_OCR_MASK] ?: true,
                 enableMultiScan = preferences[Keys.ENABLE_MULTI_SCAN] ?: false,
                 // 👇 新增：读取 DI 校验开关状态
-                enableDiValidation = preferences[Keys.ENABLE_DI_VALIDATION] ?: false
+                enableDiValidation = preferences[Keys.ENABLE_DI_VALIDATION] ?: false,
+                // 👇 读取扫描框尺寸
+                barcodeFrameWidth = preferences[Keys.BARCODE_FRAME_W] ?: 260,
+                barcodeFrameHeight = preferences[Keys.BARCODE_FRAME_H] ?: 260,
+                ocrFrameWidth = preferences[Keys.OCR_FRAME_W] ?: 80,
+                ocrFrameHeight = preferences[Keys.OCR_FRAME_H] ?: 300,
+                serverIp = preferences[Keys.SERVER_IP] ?: ""
             )
         }
 
@@ -97,6 +114,24 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun updateDiValidation(enable: Boolean) {
         context.dataStore.edit { it[Keys.ENABLE_DI_VALIDATION] = enable }
+    }
+
+    // --- 扫描框尺寸写入方法 ---
+    suspend fun updateBarcodeFrameWidth(w: Int) {
+        context.dataStore.edit { it[Keys.BARCODE_FRAME_W] = w }
+    }
+    suspend fun updateBarcodeFrameHeight(h: Int) {
+        context.dataStore.edit { it[Keys.BARCODE_FRAME_H] = h }
+    }
+    suspend fun updateOcrFrameWidth(w: Int) {
+        context.dataStore.edit { it[Keys.OCR_FRAME_W] = w }
+    }
+    suspend fun updateOcrFrameHeight(h: Int) {
+        context.dataStore.edit { it[Keys.OCR_FRAME_H] = h }
+    }
+
+    suspend fun updateServerIp(ip: String) {
+        context.dataStore.edit { it[Keys.SERVER_IP] = ip }
     }
 
     // ============================================================
