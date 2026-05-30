@@ -5,7 +5,8 @@
       "Bash(./gradlew compileDebugKotlin)",
       "Bash(head -n 802 \"D:/xz/InventoryMaster/app/src/main/java/com/example/inventorymaster/ui/inventory/InventoryScreen.kt\")",
       "Bash(mv /tmp/InventoryScreen_clean.kt \"D:/xz/InventoryMaster/app/src/main/java/com/example/inventorymaster/ui/inventory/InventoryScreen.kt\")",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "mcp__codegraph__codegraph_explore"
     ]
   }
 }

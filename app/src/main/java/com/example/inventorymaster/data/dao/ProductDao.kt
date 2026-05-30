@@ -17,18 +17,18 @@ interface ProductDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertProducts(products: List<ProductBase>)
 
-    // 3. 根据 DI 查找产品 (扫码时用)
-    @Query("SELECT * FROM product_base WHERE di = :di")
-    suspend fun getProductByDi(di: String): ProductBase?
+    // 3. 根据 productKey 查找产品 (扫码时用)
+    @Query("SELECT * FROM product_base WHERE productKey = :productKey")
+    suspend fun getProductByKey(productKey: String): ProductBase?
 
 
 
-    // 4. 模糊搜索产品库 (比如你想手动查找某个产品)
+    // 4. 模糊搜索产品库
     @Query("""
-        SELECT * FROM product_base 
-        WHERE productName LIKE '%' || :query || '%' 
-        OR manufacturer LIKE '%' || :query || '%' 
-        OR di LIKE '%' || :query || '%'
+        SELECT * FROM product_base
+        WHERE productName LIKE '%' || :query || '%'
+        OR manufacturer LIKE '%' || :query || '%'
+        OR productKey LIKE '%' || :query || '%'
     """)
     suspend fun searchProducts(query: String): List<ProductBase>
 
@@ -36,13 +36,13 @@ interface ProductDao {
     @Query("SELECT * FROM product_base ORDER BY productName ASC")
     suspend fun getAllProducts(): List<ProductBase>
 
-    // 6. 删除产品 (按 DI)
-    @Query("DELETE FROM product_base WHERE di = :di")
-    suspend fun deleteProductByDi(di: String)
+    // 6. 删除产品 (按 productKey)
+    @Query("DELETE FROM product_base WHERE productKey = :productKey")
+    suspend fun deleteProductByKey(productKey: String)
 
     // 7. 批量删除产品
-    @Query("DELETE FROM product_base WHERE di IN (:diList)")
-    suspend fun deleteProductsByDi(diList: List<String>)
+    @Query("DELETE FROM product_base WHERE productKey IN (:productKeyList)")
+    suspend fun deleteProductsByKey(productKeyList: List<String>)
 
     // 2. [新增] 安全更新：用于覆盖旧产品 绝对不能用 REPLACE，否则有盘点记录时会闪退！
     @Update

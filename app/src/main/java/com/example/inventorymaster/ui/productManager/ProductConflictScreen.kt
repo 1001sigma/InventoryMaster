@@ -99,7 +99,7 @@ fun ProductConflictScreen(
                 contentPadding = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(conflicts, key = { it.di }) { item ->
+                items(conflicts, key = { it.productKey }) { item ->
                     ConflictCard(item, onToggle)
                 }
             }
@@ -123,7 +123,7 @@ fun ConflictCard(item: ProductConflict, onToggle: (String) -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(item.di, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text(item.productKey, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -134,7 +134,7 @@ fun ConflictCard(item: ProductConflict, onToggle: (String) -> Unit) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Switch(
                         checked = isOverwrite,
-                        onCheckedChange = { onToggle(item.di) },
+                        onCheckedChange = { onToggle(item.productKey) },
                         thumbContent = {
                             if (isOverwrite) Icon(Icons.Default.Check, null, Modifier.size(12.dp))
                         }

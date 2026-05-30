@@ -1,5 +1,6 @@
 package com.example.inventorymaster.viewmodel
 
+import android.app.Application
 import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -12,6 +13,7 @@ import com.example.inventorymaster.data.entity.ExpiryState
 import com.example.inventorymaster.data.entity.HighlightField
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
+import com.example.inventorymaster.data.model.MappingTemplate
 import com.example.inventorymaster.data.model.StockRecordCombined
 import com.example.inventorymaster.data.entity.StockRecordUiModel
 import com.example.inventorymaster.data.model.ConflictAction
@@ -20,7 +22,9 @@ import com.example.inventorymaster.data.repository.InventoryRepository
 import com.example.inventorymaster.utils.BatchCodeProcessor
 import com.example.inventorymaster.utils.ExcelUtils
 import com.example.inventorymaster.utils.Gs1Parser
+import com.example.inventorymaster.utils.MappingTemplateManager
 import com.example.inventorymaster.utils.ProductJsonUtils
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,11 +56,17 @@ data class InventoryUiState(
     val invalidDiList: List<StockRecordCombined> = emptyList(), // 校验失败的清单，只要不为空，UI就弹窗
     // 产品库删除模式
     val isProductDeleteMode: Boolean = false,
-    val selectedProductsForDelete: Set<String> = emptySet()
+    val selectedProductsForDelete: Set<String> = emptySet(),
+    // Excel 映射模板
+    val mappingTemplates: List<MappingTemplate> = emptyList()
 )
 
 
-class InventoryViewModel(private val repository: InventoryRepository, private val settingsRepository: SettingsRepository) : ViewModel() {
+class InventoryViewModel(
+    private val app: Application,
+    private val repository: InventoryRepository,
+    private val settingsRepository: SettingsRepository
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(InventoryUiState())
     private var pendingExcelProducts: List<ProductBase> = emptyList()
@@ -114,17 +124,17 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
                     if (useSmartBatch) {
                         repository.getRecordsBybatchorexpiryDate(sessionId,processedBatch)
                     } else if (scanResult.isUdi && !scanResult.di.isNullOrBlank()) {
-                        val di = scanResult.di!!
+                        val productKey = scanResult.di!!
                         val batch = scanResult.batch
                         if (!batch.isNullOrBlank()) {
-                            val diandand = repository.getRecordsByUdi(sessionId, di, batch)
-                            if (diandand.isEmpty()) {
+                            val byUdi = repository.getRecordsByUdi(sessionId, productKey, batch)
+                            if (byUdi.isEmpty()) {
                                 repository.getRecordsBybatchorexpiryDate(sessionId,batch)
                             } else {
-                                repository.getRecordsByDi(sessionId, di)
+                                repository.getRecordsByKey(sessionId, productKey)
                             }
                         } else {
-                        repository.getRecordsByDi(sessionId, di)
+                        repository.getRecordsByKey(sessionId, productKey)
                     }
                 } else {
                     repository.searchRecords(sessionId, cleanQuery)
@@ -163,7 +173,7 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
                 query.isBlank() -> HighlightField.NONE
                 product?.productName?.contains(query, ignoreCase = true) == true -> HighlightField.PRODUCT_NAME
                 record.batchNumber.contains(query, ignoreCase = true) -> HighlightField.BATCH_NUMBER
-                record.di.contains(query, ignoreCase = true) -> HighlightField.DI
+                record.productKey.contains(query, ignoreCase = true) -> HighlightField.DI
                 record.location.contains(query, ignoreCase = true) -> HighlightField.LOCATION
                 else -> HighlightField.NONE
             }
@@ -380,6 +390,72 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
         }
     }
 
+    /** 使用显式列映射导入 Excel */
+    fun importExcelFileWithMapping(
+        context: Context,
+        uri: Uri,
+        sessionId: Long,
+        mapping: Map<Int, ExcelUtils.FieldType>
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val isValidationEnabled = _uiState.value.isDiValidationEnabled
+                val result = ExcelUtils.parseExcelWithMapping(
+                    context, uri, sessionId, mapping, isValidationEnabled
+                )
+                ExcelUtils.SchemaHelper.saveSchema(context, sessionId, result.schema)
+                analyzeExcelImport(result.products, result.records)
+                if (result.invalidItems.isNotEmpty()) {
+                    _uiState.value = _uiState.value.copy(invalidDiList = result.invalidItems)
+                } else if (isValidationEnabled) {
+                    _uiState.value = _uiState.value.copy(userMessage = "导入成功，所有 DI 校验通过！")
+                } else {
+                    _uiState.value = _uiState.value.copy(userMessage = "导入成功")
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _uiState.value = _uiState.value.copy(userMessage = "导入失败: ${e.message}")
+            }
+        }
+    }
+
+    /** 加载已保存的映射模板列表 */
+    fun loadMappingTemplates() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val templates = MappingTemplateManager.getAllTemplates(app)
+            _uiState.value = _uiState.value.copy(mappingTemplates = templates)
+        }
+    }
+
+    fun getCachedTemplates(): List<MappingTemplate> = _uiState.value.mappingTemplates
+
+    /** 保存映射模板（新建或更新） */
+    fun saveMappingTemplate(
+        name: String,
+        fieldMap: Map<Int, ExcelUtils.FieldType>,
+        existingId: String? = null
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val template = if (existingId != null) {
+                val old = MappingTemplateManager.getAllTemplates(app).find { it.id == existingId }
+                MappingTemplate.fromFieldMap(existingId, name, fieldMap, old?.createdAt ?: now, now)
+            } else {
+                MappingTemplate.fromFieldMap(UUID.randomUUID().toString(), name, fieldMap, now, now)
+            }
+            MappingTemplateManager.saveTemplate(app, template)
+            loadMappingTemplates()
+        }
+    }
+
+    /** 删除映射模板 */
+    fun deleteMappingTemplate(templateId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            MappingTemplateManager.deleteTemplate(app, templateId)
+            loadMappingTemplates()
+        }
+    }
+
     // 导出逻辑
     fun exportExcelFile(context: Context, uri: Uri, sessionId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -429,8 +505,8 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
         _uiState.value = _uiState.value.copy(searchQuery = newQuery)
     }
 
-    suspend fun getProductInfo(di: String): ProductBase? {
-        return repository.getProductByDi(di)
+    suspend fun getProductInfo(productKey: String): ProductBase? {
+        return repository.getProductByKey(productKey)
     }
 
     companion object {
@@ -438,7 +514,7 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
                 val application = (extras[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as InventoryApplication)
-                return InventoryViewModel(application.repository,com.example.inventorymaster.data.SettingsRepository(application)) as T
+                return InventoryViewModel(application, application.repository, com.example.inventorymaster.data.SettingsRepository(application)) as T
             }
         }
     }
@@ -466,7 +542,7 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
         viewModelScope.launch {
             repository.updateProduct(product)
             val currentList = _uiState.value.productList.map {
-                if (it.di == product.di) product else it
+                if (it.productKey == product.productKey) product else it
             }
             _uiState.value = _uiState.value.copy(productList = currentList)
         }
@@ -497,10 +573,10 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
         _uiState.value = _uiState.value.copy(conflictList = updated)
     }
 
-    fun toggleConflictAction(di: String) {
+    fun toggleConflictAction(productKey: String) {
         val current = _uiState.value.conflictList
         val updated = current.map {
-            if (it.di == di) {
+            if (it.productKey == productKey) {
                 val nextAction = if (it.resolveAction == ConflictAction.OVERWRITE) ConflictAction.IGNORE else ConflictAction.OVERWRITE
                 it.copy(resolveAction = nextAction)
             } else it
@@ -516,7 +592,7 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
 
             for (conflict in conflicts) {
                 if (conflict.resolveAction == ConflictAction.IGNORE) {
-                    val index = finalProducts.indexOfFirst { it.di == conflict.di }
+                    val index = finalProducts.indexOfFirst { it.productKey == conflict.productKey }
                     if (index != -1) {
                         finalProducts[index] = conflict.oldProduct
                     }
@@ -591,7 +667,7 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
 
             for (conflict in conflicts) {
                 if (conflict.resolveAction == ConflictAction.IGNORE) {
-                    val index = finalProducts.indexOfFirst { it.di == conflict.di }
+                    val index = finalProducts.indexOfFirst { it.productKey == conflict.productKey }
                     if (index != -1) finalProducts[index] = conflict.oldProduct
                 }
             }
@@ -662,9 +738,9 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
         )
     }
 
-    fun toggleProductSelection(di: String) {
+    fun toggleProductSelection(productKey: String) {
         val current = _uiState.value.selectedProductsForDelete.toMutableSet()
-        if (current.contains(di)) current.remove(di) else current.add(di)
+        if (current.contains(productKey)) current.remove(productKey) else current.add(productKey)
         _uiState.value = _uiState.value.copy(selectedProductsForDelete = current)
     }
 
@@ -683,10 +759,10 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
         }
     }
 
-    fun deleteSingleProduct(di: String) {
+    fun deleteSingleProduct(productKey: String) {
         viewModelScope.launch {
             try {
-                repository.deleteProductByDi(di)
+                repository.deleteProductByKey(productKey)
                 _uiState.value = _uiState.value.copy(userMessage = "已删除产品")
                 val query = _uiState.value.searchQuery
                 if (query.isNotBlank()) searchProducts(query)
@@ -701,7 +777,7 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
         if (selected.isEmpty()) return
         viewModelScope.launch {
             try {
-                repository.deleteProductsByDi(selected.toList())
+                repository.deleteProductsByKey(selected.toList())
                 _uiState.value = _uiState.value.copy(
                     isProductDeleteMode = false,
                     selectedProductsForDelete = emptySet(),
@@ -721,11 +797,11 @@ class InventoryViewModel(private val repository: InventoryRepository, private va
     fun validateCurrentTaskDIs() {
         val currentData = _uiState.value.searchResults
         val invalidList = currentData.map { it.combined }.filter { item ->
-            val di = item.record.di
-            if (di.isBlank()) {
-                false // 跳过空 DI
+            val productDi = item.product?.di
+            if (productDi.isNullOrBlank()) {
+                false
             } else {
-                !Gs1Parser.isValidDI(di) // 不合法的挑出来
+                !Gs1Parser.isValidDI(productDi)
             }
         }
 

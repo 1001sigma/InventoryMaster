@@ -257,20 +257,20 @@ fun ProductManagerScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(uiState.productList, key = { it.di }) { product ->
+                        items(uiState.productList, key = { it.productKey }) { product ->
                             SwipeableProductCard(
                                 product = product,
                                 isDeleteMode = uiState.isProductDeleteMode,
-                                isSelected = uiState.selectedProductsForDelete.contains(product.di),
-                                onToggleSelect = { viewModel.toggleProductSelection(product.di) },
+                                isSelected = uiState.selectedProductsForDelete.contains(product.productKey),
+                                onToggleSelect = { viewModel.toggleProductSelection(product.productKey) },
                                 onClick = {
                                     if (uiState.isProductDeleteMode) {
-                                        viewModel.toggleProductSelection(product.di)
+                                        viewModel.toggleProductSelection(product.productKey)
                                     } else {
                                         editingProduct = product
                                     }
                                 },
-                                onDelete = { viewModel.deleteSingleProduct(product.di) }
+                                onDelete = { viewModel.deleteSingleProduct(product.productKey) }
                             )
                         }
                         item { Spacer(modifier = Modifier.height(80.dp)) } // 底部留白给 FAB
@@ -446,7 +446,7 @@ fun SwipeableProductCard(
             shape = RoundedCornerShape(24.dp),
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("确认删除", fontWeight = FontWeight.Bold) },
-            text = { Text("确定要删除产品「${product.productName}」吗？\nDI: ${product.di}") },
+            text = { Text("确定要删除产品「${product.productName}」吗？\nKey: ${product.productKey}" + (product.di?.let { "\nDI: $it" } ?: "")) },
             confirmButton = {
                 Button(
                     shape = RoundedCornerShape(12.dp),
@@ -543,7 +543,7 @@ fun SwipeableProductCard(
                     // 底部标识信息采用微标签风格
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(
-                            text = "DI: ${product.di}",
+                            text = "Key: ${product.productKey}" + (product.di?.let { " | DI: $it" } ?: ""),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.outline
                         )
@@ -581,7 +581,7 @@ fun ProductAddEditDialog(
     onConfirm: (ProductBase) -> Unit
 ) {
     val isEdit = existingProduct != null
-    var di by remember { mutableStateOf(existingProduct?.di ?: "") }
+    var productKey by remember { mutableStateOf(existingProduct?.productKey ?: "") }
     var name by remember { mutableStateOf(existingProduct?.productName ?: "") }
     var spec by remember { mutableStateOf(existingProduct?.specification ?: "") }
     var model by remember { mutableStateOf(existingProduct?.model ?: "") }
@@ -590,7 +590,7 @@ fun ProductAddEditDialog(
     var matCode by remember { mutableStateOf(existingProduct?.materialCode ?: "") }
     var unit by remember { mutableStateOf(existingProduct?.unit ?: "") }
     var catCode by remember { mutableStateOf(existingProduct?.categoryCode ?: "") }
-    var diError by remember { mutableStateOf(false) }
+    var keyError by remember { mutableStateOf(false) }
 
     AlertDialog(
         shape = RoundedCornerShape(24.dp),
@@ -603,14 +603,14 @@ fun ProductAddEditDialog(
             ) {
                 item {
                     if (isEdit) {
-                        Text("DI (条码): ${existingProduct!!.di}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
+                        Text("Key: ${existingProduct!!.productKey}" + (existingProduct.di?.let { " | DI: $it" } ?: ""), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
                     } else {
                         MinimalistTextField(
-                            value = di,
-                            onValueChange = { di = it; diError = false },
-                            label = "DI (条码) *",
-                            isError = diError,
-                            supportingText = if (diError) {{ Text("DI 不能为空") }} else null,
+                            value = productKey,
+                            onValueChange = { productKey = it; keyError = false },
+                            label = "产品Key/条码 *",
+                            isError = keyError,
+                            supportingText = if (keyError) {{ Text("产品Key不能为空") }} else null,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -629,15 +629,16 @@ fun ProductAddEditDialog(
             Button(
                 shape = RoundedCornerShape(12.dp),
                 onClick = {
-                    if (!isEdit && di.isBlank()) {
-                        diError = true
+                    if (!isEdit && productKey.isBlank()) {
+                        keyError = true
                         return@Button
                     }
                     if (name.isBlank()) name = "未命名产品"
                     if (mfr.isBlank()) mfr = "未知厂家"
                     onConfirm(
                         ProductBase(
-                            di = if (isEdit) existingProduct!!.di else di.trim(),
+                            productKey = if (isEdit) existingProduct!!.productKey else productKey.trim(),
+                            di = if (isEdit) existingProduct!!.di else productKey.trim().takeIf { it.isNotBlank() },
                             productName = name,
                             specification = spec.ifBlank { null },
                             model = model.ifBlank { null },

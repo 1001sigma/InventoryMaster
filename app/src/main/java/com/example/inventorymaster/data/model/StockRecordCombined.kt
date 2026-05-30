@@ -10,8 +10,8 @@ data class StockRecordCombined(
     val record: StockRecord,
 
     @Relation(
-        parentColumn = "di",
-        entityColumn = "di"
+        parentColumn = "productKey",
+        entityColumn = "productKey"
     )
     val product: ProductBase?
 )

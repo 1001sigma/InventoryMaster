@@ -5,16 +5,17 @@ import androidx.room.PrimaryKey
 
 /**
  * L1 基础产品库 (字典表)
- * 结构对齐 NMPA UDI 数据库标准，用于存储产品的静态属性。
- * 全局共享，不随盘点任务删除而删除。
+ * productKey 为统一关联键：有 DI 时 = DI，无 DI 时 = "MCODE:" + materialCode
+ * di 字段只存真实 GTIN，不再被污染。
  */
 @Entity(tableName = "product_base")
 data class ProductBase(
     // --- 核心主键 ---
     @PrimaryKey
-    val di: String, // GTIN (01) 全球贸易项目代码，作为唯一身份证
+    val productKey: String,        // 统一关联键：di 不为空时=di，否则="MCODE:"+materialCode
 
-    // --- NMPA 标准字段 (用于后续校对) ---
+    // --- NMPA 标准字段 ---
+    val di: String? = null,        // GTIN (01) 全球贸易项目代码，仅存真实 DI，可为空
     val productName: String,       // 通用名称 (对应 NMPA: CPMC)
     val specification: String?,    // 规格 (对应 NMPA: GGXH - 规格)
     val model: String?,            // 型号 (对应 NMPA: GGXH - 型号)
@@ -29,4 +30,22 @@ data class ProductBase(
     // --- 数据维护字段 ---
     val lastSyncTime: Long = 0,     // 上次同步/更新时间
     val source: String = "local"    // 数据来源: "local"(手动/Excel导入), "nmpa"(国家库), "json"(json导入)
-)
+) {
+    companion object {
+        /**
+         * 生成产品统一关联键
+         * @param di GTIN 码，可为空
+         * @param materialCode 物料编码，可为空
+         * @return 关联键：有 DI 返回 DI，否则返回 "MCODE:" + materialCode
+         */
+        fun computeProductKey(di: String?, materialCode: String?): String {
+            val trimmedDi = di?.trim()
+            val trimmedCode = materialCode?.trim()
+            return when {
+                !trimmedDi.isNullOrBlank()          -> trimmedDi
+                !trimmedCode.isNullOrBlank()        -> "MCODE:$trimmedCode"
+                else -> throw IllegalArgumentException("DI 和物料编码不能同时为空")
+            }
+        }
+    }
+}

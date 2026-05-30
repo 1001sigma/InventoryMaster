@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.NightsStay
@@ -46,6 +47,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -65,20 +67,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.inventorymaster.data.model.MappingTemplate
 import com.example.inventorymaster.ui.theme.ModernColorSchemes
+import com.example.inventorymaster.viewmodel.InventoryViewModel
 import com.example.inventorymaster.viewmodel.SettingsViewModel
 
 // 预设颜色列表
 val PresetColors = ModernColorSchemes.allSchemes.map { it.primary }
 
 @Composable
-fun SettingsScreen(viewModel: SettingsViewModel) {
+fun SettingsScreen(viewModel: SettingsViewModel, inventoryViewModel: InventoryViewModel) {
     val uiState by viewModel.uiState.collectAsState()
 
     var customSectionExpanded by remember { mutableStateOf(false) }
     var darkSectionExpanded by remember { mutableStateOf(false) }
     var scanFrameSectionExpanded by remember { mutableStateOf(false) }
     var networkSectionExpanded by remember { mutableStateOf(false) }
+    var excelMappingSectionExpanded by remember { mutableStateOf(false) }
 
     // Map preset colors to their scheme names for labels
     val schemeNames = ModernColorSchemes.allSchemes.map { it.name }
@@ -285,6 +290,24 @@ fun SettingsScreen(viewModel: SettingsViewModel) {
                 ServerIpInput(
                     currentIp = uiState.serverIp,
                     onSave = { viewModel.setServerIp(it) }
+                )
+            }
+        }
+
+        // 6. "Excel 映射管理" 分组
+        item {
+            ExpandableSection(
+                title = "Excel 映射管理",
+                icon = Icons.Default.FileOpen,
+                expanded = excelMappingSectionExpanded,
+                onExpandChange = {
+                    excelMappingSectionExpanded = it
+                    if (it) inventoryViewModel.loadMappingTemplates()
+                }
+            ) {
+                ExcelMappingContent(
+                    templates = inventoryViewModel.getCachedTemplates(),
+                    onDelete = { inventoryViewModel.deleteMappingTemplate(it) }
                 )
             }
         }
@@ -623,6 +646,47 @@ fun FramePreview(
 fun isContrastEnough(color: Color): Boolean {
     val luminance = (color.red * 0.299 + color.green * 0.587 + color.blue * 0.114)
     return luminance > 0.5
+}
+
+@Composable
+private fun ExcelMappingContent(
+    templates: List<MappingTemplate>,
+    onDelete: (String) -> Unit
+) {
+    if (templates.isEmpty()) {
+        Text(
+            text = "暂无保存的映射模板。\n在导入 Excel 时保存映射即可在此管理。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+    } else {
+        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+            templates.forEach { template ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = template.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "${template.mappings.size} 个字段映射",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = { onDelete(template.id) }) {
+                        Text("删除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+            }
+        }
+    }
 }
 
 /**

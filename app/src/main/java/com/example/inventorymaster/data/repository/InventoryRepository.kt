@@ -21,8 +21,8 @@ interface InventoryRepository {
     fun getRecordsBySession(sessionId: Long): Flow<List<StockRecordCombined>>
 
     suspend fun searchRecords(sessionId: Long, query: String): List<StockRecordCombined>
-    suspend fun getRecordsByUdi(sessionId: Long, di: String, batch: String): List<StockRecordCombined>
-    suspend fun getRecordsByDi(sessionId: Long, di: String): List<StockRecordCombined>
+    suspend fun getRecordsByUdi(sessionId: Long, productKey: String, batch: String): List<StockRecordCombined>
+    suspend fun getRecordsByKey(sessionId: Long, productKey: String): List<StockRecordCombined>
 
     // 写入/更新
     suspend fun saveRecord(record: StockRecord)
@@ -36,8 +36,8 @@ interface InventoryRepository {
     suspend fun getUnverifiedCount(sessionId: Long): Int
     suspend fun getExportData(sessionId: Long): List<StockRecordCombined>
 
-    // [新增] 专门给扫码用的：如果本地没有产品资料，可能需要手动查一下(预留)
-    suspend fun getProductByDi(di: String): ProductBase?
+    // 根据 productKey 查找产品资料
+    suspend fun getProductByKey(productKey: String): ProductBase?
 
     suspend fun searchProducts(query: String): List<ProductBase>
     //临时无UDI搜索接口 批号or 效期
@@ -51,8 +51,8 @@ interface InventoryRepository {
     suspend fun updateProduct(product: ProductBase)
     suspend fun getAllProducts(): List<ProductBase>
     suspend fun saveProductsOnly(products: List<ProductBase>)
-    suspend fun deleteProductByDi(di: String)
-    suspend fun deleteProductsByDi(diList: List<String>)
+    suspend fun deleteProductByKey(productKey: String)
+    suspend fun deleteProductsByKey(productKeyList: List<String>)
 
     //上传数据到电脑
     suspend fun exportFullSession(ip: String, sessionId: Long): Result<String>

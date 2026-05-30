@@ -10,7 +10,7 @@ enum class ConflictAction {
 
 // 冲突数据包裹
 data class ProductConflict(
-    val di: String,
+    val productKey: String,
     val oldProduct: ProductBase, // 数据库里的
     val newProduct: ProductBase, // Excel 里的
     var resolveAction: ConflictAction = ConflictAction.PENDING // 默认状态

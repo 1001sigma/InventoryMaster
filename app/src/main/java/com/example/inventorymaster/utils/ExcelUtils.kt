@@ -181,19 +181,15 @@ object ExcelUtils {
                 val regCert = if (idxReg != -1) getCellValue(row.getCell(idxReg)) else ""
                 val unit = if (idxUnit != -1) getCellValue(row.getCell(idxUnit)) else ""
 
-                // 生成唯一标识 (逻辑不变)
-                val findDi = when {
-                    rawDi.isNotBlank() -> rawDi
-                    rawMatCode.isNotBlank() -> rawMatCode
-                    name.isNotBlank() -> {
-                        val rawString = "$name$spec$model"
-                        "LOCAL-${rawString.hashCode().toString().replace("-","N")}"
-                    }
-                    else -> continue // 这一行没有任何有效信息，跳过
-                }
-                // 构建 ProductBase (逻辑不变)
+                // 生成 productKey (替代旧的 findDi 污染逻辑)
+                val productKey = ProductBase.computeProductKey(
+                    di = rawDi.ifBlank { null },
+                    materialCode = rawMatCode.ifBlank { null }
+                )
+                // 构建 ProductBase：productKey 是关联键，di 只存真实 DI
                 val product = ProductBase(
-                    di = findDi,
+                    productKey = productKey,
+                    di = rawDi.ifBlank { null },
                     productName = if (name.isBlank()) "未知商品" else name,
                     specification = spec,
                     model = model,
@@ -225,10 +221,10 @@ object ExcelUtils {
                 val expiry = expiryStr.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L
                 val qty = qtyStr.toDoubleOrNull() ?: 0.0
 
-                // 构建 StockRecord (逻辑不变)
+                // 构建 StockRecord (productKey 替代旧 di 字段)
                 val record = StockRecord(
                     sessionId = sessionId,
-                    di = findDi,
+                    productKey = productKey,
                     batchNumber = batch,
                     expiryDate = expiry,
                     quantity = qty,
@@ -237,9 +233,7 @@ object ExcelUtils {
                     sourceType = 1 // Excel导入
                 )
                 records.add(record)
-                // 👇 新增：核心的 DI 校验拦截逻辑
-                // 只有当开关开启，并且这一行确实填了 DI (rawDi) 的时候，才进行校验。
-                // 如果只填了物料编码没填 DI，产生的 findDi 是内部生成的，不需要走 GS1 校验。
+                // DI 校验：仅当开关开启且填写了真实 DI 时才校验 GS1 格式
                 if (isDiValidationEnabled && rawDi.isNotBlank()) {
                     // 调用第一步在 Gs1Parser 里写好的校验方法
                     if (!Gs1Parser.isValidDI(rawDi)) {
@@ -256,6 +250,164 @@ object ExcelUtils {
         } catch (e: Exception) {
             e.printStackTrace()
             throw e
+        } finally {
+            inputStream?.close()
+        }
+    }
+
+    /** 只读表头行，返回表头文本列表，供映射界面使用 */
+    fun parseHeaders(context: Context, uri: Uri): List<String> {
+        var inputStream: InputStream? = null
+        try {
+            inputStream = context.contentResolver.openInputStream(uri)
+            val workbook = WorkbookFactory.create(inputStream)
+            val sheet = workbook.getSheetAt(0)
+            val headerRow = sheet.getRow(0) ?: throw Exception("表格为空")
+            val lastCol = headerRow.lastCellNum.toInt()
+            val headers = (0 until lastCol).map { i ->
+                val cell = headerRow.getCell(i)
+                val raw = getCellValue(cell)
+                if (raw.isNotBlank()) raw else "列${i + 1}"
+            }
+            workbook.close()
+            return headers
+        } finally {
+            inputStream?.close()
+        }
+    }
+
+    /** 使用显式列映射解析 Excel，未映射列回退到关键词自动识别 */
+    fun parseExcelWithMapping(
+        context: Context,
+        uri: Uri,
+        sessionId: Long,
+        mapping: Map<Int, FieldType>,
+        isDiValidationEnabled: Boolean = false
+    ): ImportResult {
+        val products = mutableListOf<ProductBase>()
+        val records = mutableListOf<StockRecord>()
+        val invalidItems = mutableListOf<StockRecordCombined>()
+        var inputStream: InputStream? = null
+
+        try {
+            inputStream = context.contentResolver.openInputStream(uri)
+            val workbook = WorkbookFactory.create(inputStream)
+            val sheet = workbook.getSheetAt(0)
+
+            val headerRow = sheet.getRow(0) ?: throw Exception("表格为空")
+            val lastColIndex = headerRow.lastCellNum.toInt()
+
+            // 构建 Schema
+            val columnSchemas = mutableListOf<ColumnSchema>()
+            for (i in 0 until lastColIndex) {
+                val cell = headerRow.getCell(i)
+                val headerName = getCellValue(cell)
+                val colWidth = sheet.getColumnWidth(i)
+                val type = mapping[i] ?: identifyFieldType(headerName)
+                columnSchemas.add(ColumnSchema(i, headerName, colWidth, type))
+            }
+            val tableSchema = TableSchema(columnSchemas)
+
+            // 构建 fieldMap：显式映射优先，其余关键词兜底
+            val mergedFieldMap = mutableMapOf<FieldType, Int>()
+            for (schema in columnSchemas) {
+                if (schema.fieldType != FieldType.UNKNOWN) {
+                    mergedFieldMap[schema.fieldType] = schema.columnIndex
+                }
+            }
+            // 显式映射覆盖兜底
+            for ((colIdx, fieldType) in mapping) {
+                mergedFieldMap[fieldType] = colIdx
+            }
+            val fieldMap = mergedFieldMap
+
+            if (!fieldMap.containsKey(FieldType.DI) && !fieldMap.containsKey(FieldType.MAT_CODE)) {
+                throw Exception("未找到 'UDI/条码' 或 '物料编码' 列，无法识别商品")
+            }
+
+            // 遍历数据行
+            val rowIterator = sheet.iterator()
+            if (rowIterator.hasNext()) rowIterator.next()
+
+            while (rowIterator.hasNext()) {
+                val row = rowIterator.next()
+
+                val idxDi = fieldMap[FieldType.DI] ?: -1
+                val idxMatCode = fieldMap[FieldType.MAT_CODE] ?: -1
+                val rawDi = if (idxDi != -1) getCellValue(row.getCell(idxDi)) else ""
+                val rawMatCode = if (idxMatCode != -1) getCellValue(row.getCell(idxMatCode)) else ""
+
+                val idxName = fieldMap[FieldType.NAME] ?: -1
+                val idxSpec = fieldMap[FieldType.SPEC] ?: -1
+                val idxModel = fieldMap[FieldType.MODEL] ?: -1
+                val idxMfr = fieldMap[FieldType.MFR] ?: -1
+                val idxReg = fieldMap[FieldType.REG_CERT] ?: -1
+                val idxUnit = fieldMap[FieldType.UNIT] ?: -1
+
+                val name = if (idxName != -1) getCellValue(row.getCell(idxName)) else "未命名产品"
+                val spec = if (idxSpec != -1) getCellValue(row.getCell(idxSpec)) else ""
+                val model = if (idxModel != -1) getCellValue(row.getCell(idxModel)) else ""
+                val mfr = if (idxMfr != -1) getCellValue(row.getCell(idxMfr)) else "未知厂家"
+                val regCert = if (idxReg != -1) getCellValue(row.getCell(idxReg)) else ""
+                val unit = if (idxUnit != -1) getCellValue(row.getCell(idxUnit)) else ""
+
+                val productKey = ProductBase.computeProductKey(
+                    di = rawDi.ifBlank { null },
+                    materialCode = rawMatCode.ifBlank { null }
+                )
+
+                val product = ProductBase(
+                    productKey = productKey,
+                    di = rawDi.ifBlank { null },
+                    productName = if (name.isBlank()) "未知商品" else name,
+                    specification = spec,
+                    model = model,
+                    manufacturer = mfr,
+                    registrationCert = regCert,
+                    unit = unit,
+                    source = when {
+                        rawDi.isNotBlank() -> "scan"
+                        rawMatCode.isNotBlank() -> "erp"
+                        else -> "local_gen"
+                    },
+                    materialCode = rawMatCode,
+                    categoryCode = null
+                )
+                products.add(product)
+
+                val idxBatch = fieldMap[FieldType.BATCH] ?: -1
+                val idxExpiry = fieldMap[FieldType.EXPIRY] ?: -1
+                val idxQty = fieldMap[FieldType.QTY] ?: -1
+                val idxLoc = fieldMap[FieldType.LOC] ?: -1
+
+                val batch = if (idxBatch != -1) getCellValue(row.getCell(idxBatch)) else ""
+                val expiryStr = if (idxExpiry != -1) getCellValue(row.getCell(idxExpiry)) else ""
+                val qtyStr = if (idxQty != -1) getCellValue(row.getCell(idxQty)) else "0"
+                val loc = if (idxLoc != -1) getCellValue(row.getCell(idxLoc)) else ""
+
+                val expiry = expiryStr.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L
+                val qty = qtyStr.toDoubleOrNull() ?: 0.0
+
+                val record = StockRecord(
+                    sessionId = sessionId,
+                    productKey = productKey,
+                    batchNumber = batch,
+                    expiryDate = expiry,
+                    quantity = qty,
+                    actualQuantity = null,
+                    location = loc,
+                    sourceType = 1
+                )
+                records.add(record)
+
+                if (isDiValidationEnabled && rawDi.isNotBlank()) {
+                    if (!Gs1Parser.isValidDI(rawDi)) {
+                        invalidItems.add(StockRecordCombined(record, product))
+                    }
+                }
+            }
+            workbook.close()
+            return ImportResult(products, records, tableSchema, invalidItems)
         } finally {
             inputStream?.close()
         }
@@ -371,7 +523,7 @@ object ExcelUtils {
                 // 2. 根据 FieldType 填值
                 when (col.fieldType) {
                     // --- 基础信息 ---
-                    FieldType.DI -> cell.setCellValue(r.di)
+                    FieldType.DI -> cell.setCellValue(p?.di ?: "")
                     FieldType.MAT_CODE -> cell.setCellValue(p?.materialCode ?: "")
                     FieldType.NAME -> cell.setCellValue(p?.productName ?: "")
                     FieldType.SPEC -> cell.setCellValue(p?.specification ?: "")
@@ -448,6 +600,9 @@ object ExcelUtils {
         }
     }
 
+    /** 公开的关键词推荐，供 UI 映射界面计算智能默认值 */
+    fun suggestFieldType(headerName: String): FieldType = identifyFieldType(headerName)
+
     // --- 辅助方法 (保持不变) ---
     private fun getCellValue(cell: Cell?): String {
         if (cell == null) return ""
@@ -475,7 +630,7 @@ object ExcelUtils {
             verticalAlignment = VerticalAlignment.CENTER
         }
 
-        val headers = listOf("DI", "名称", "规格", "型号", "厂家", "注册证号", "物料编码", "单位", "分类编码", "数据来源")
+        val headers = listOf("productKey", "DI", "名称", "规格", "型号", "厂家", "注册证号", "物料编码", "单位", "分类编码", "数据来源")
         val headerRow = sheet.createRow(0)
         headers.forEachIndexed { i, h ->
             val cell = headerRow.createCell(i).apply { setCellValue(h); cellStyle = headerStyle }
@@ -484,16 +639,17 @@ object ExcelUtils {
 
         products.forEachIndexed { rowIdx, p ->
             val row = sheet.createRow(rowIdx + 1)
-            row.createCell(0).setCellValue(p.di)
-            row.createCell(1).setCellValue(p.productName)
-            row.createCell(2).setCellValue(p.specification ?: "")
-            row.createCell(3).setCellValue(p.model ?: "")
-            row.createCell(4).setCellValue(p.manufacturer)
-            row.createCell(5).setCellValue(p.registrationCert ?: "")
-            row.createCell(6).setCellValue(p.materialCode ?: "")
-            row.createCell(7).setCellValue(p.unit ?: "")
-            row.createCell(8).setCellValue(p.categoryCode ?: "")
-            row.createCell(9).setCellValue(p.source)
+            row.createCell(0).setCellValue(p.productKey)
+            row.createCell(1).setCellValue(p.di ?: "")
+            row.createCell(2).setCellValue(p.productName)
+            row.createCell(3).setCellValue(p.specification ?: "")
+            row.createCell(4).setCellValue(p.model ?: "")
+            row.createCell(5).setCellValue(p.manufacturer)
+            row.createCell(6).setCellValue(p.registrationCert ?: "")
+            row.createCell(7).setCellValue(p.materialCode ?: "")
+            row.createCell(8).setCellValue(p.unit ?: "")
+            row.createCell(9).setCellValue(p.categoryCode ?: "")
+            row.createCell(10).setCellValue(p.source)
         }
 
         workbook.write(outputStream)

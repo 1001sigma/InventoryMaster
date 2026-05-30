@@ -54,19 +54,18 @@ interface StockRecordDao {
     @Query("SELECT * FROM stock_records WHERE sessionId = :sessionId ORDER BY id DESC")
     fun getRecordsBySession(sessionId: Long): Flow<List<StockRecordCombined>>
 
-    // 2. 联合模糊搜索 (强力过滤)
-    // 逻辑：连接两张表，只要库存表里的 DI/批号/库位 匹配，或者 产品表里的 名称/厂家/规格 匹配，都找出来
+    // 2. 联合模糊搜索
     @Transaction
     @Query("""
-        SELECT stock_records.* FROM stock_records 
-        LEFT JOIN product_base ON stock_records.di = product_base.di
-        WHERE stock_records.sessionId = :sessionId 
+        SELECT stock_records.* FROM stock_records
+        LEFT JOIN product_base ON stock_records.productKey = product_base.productKey
+        WHERE stock_records.sessionId = :sessionId
         AND (
-            stock_records.di LIKE '%' || :query || '%'          
+            stock_records.productKey LIKE '%' || :query || '%'
             OR stock_records.batchNumber LIKE '%' || :query || '%'
             OR stock_records.location LIKE '%' || :query || '%'
             OR stock_records.remarks LIKE '%' || :query || '%'
-            OR product_base.productName LIKE '%' || :query || '%' 
+            OR product_base.productName LIKE '%' || :query || '%'
             OR product_base.manufacturer LIKE '%' || :query || '%'
             OR product_base.specification LIKE '%' || :query || '%'
             OR product_base.model LIKE '%' || :query || '%'
@@ -74,33 +73,33 @@ interface StockRecordDao {
     """)
     suspend fun searchRecordsByQuery(sessionId: Long, query: String): List<StockRecordCombined>
 
-    // 3. UDI 精准搜索 (用于扫码枪)
+    // 3. productKey + 批号精准搜索 (用于扫码枪)
     @Transaction
     @Query("""
-        SELECT * FROM stock_records 
-        WHERE sessionId = :sessionId 
-        AND di = :di 
+        SELECT * FROM stock_records
+        WHERE sessionId = :sessionId
+        AND productKey = :productKey
         AND batchNumber = :batch
     """)
-    suspend fun getRecordsByUdi(sessionId: Long, di: String, batch: String): List<StockRecordCombined>
+    suspend fun getRecordsByUdi(sessionId: Long, productKey: String, batch: String): List<StockRecordCombined>
 
     //临时过度无UDI码 批号or效期
     @Transaction
     @Query("""
-        SELECT * FROM stock_records 
+        SELECT * FROM stock_records
         WHERE sessionId = :sessionId
         AND batchNumber = :batch
     """)
     suspend fun getRecordsBybatchorexpiryDate(sessionId: Long,batch: String): List<StockRecordCombined>
 
-    // 4. DI 精准搜索 (用于只扫了码，没扫批号的情况)
+    // 4. productKey 精准搜索 (只扫了码，没扫批号)
     @Transaction
     @Query("""
-        SELECT * FROM stock_records 
-        WHERE sessionId = :sessionId 
-        AND di = :di
+        SELECT * FROM stock_records
+        WHERE sessionId = :sessionId
+        AND productKey = :productKey
     """)
-    suspend fun getRecordsByDi(sessionId: Long, di: String): List<StockRecordCombined>
+    suspend fun getRecordsByKey(sessionId: Long, productKey: String): List<StockRecordCombined>
 
     // 5. 统计未查验数量 (逻辑不变，但为了安全加个 Transaction)
     @Query("""
@@ -115,16 +114,16 @@ interface StockRecordDao {
     @Query("SELECT * FROM stock_records WHERE sessionId = :sessionId")
     fun getExportData(sessionId: Long): List<StockRecordCombined>
 
-    //[新增] 查重：根据 DI+批号+库位 找记录
+    // 查重：根据 productKey+批号+库位 找记录
     @Query("""
-        SELECT * FROM stock_records 
-        WHERE sessionId = :sessionId 
-        AND di = :di 
-        AND batchNumber = :batch 
-        AND location = :location 
+        SELECT * FROM stock_records
+        WHERE sessionId = :sessionId
+        AND productKey = :productKey
+        AND batchNumber = :batch
+        AND location = :location
         LIMIT 1
     """)
-    suspend fun findExistingRecord(sessionId: Long, di: String, batch: String, location: String): StockRecord?
+    suspend fun findExistingRecord(sessionId: Long, productKey: String, batch: String, location: String): StockRecord?
 
     // 🔥 [新增] 1. 找出所有“待上传”的记录
     // 注意：这里用的是 sessionId (驼峰命名)，对应你表里的字段

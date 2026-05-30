@@ -1,9 +1,9 @@
-package com.example.inventorymaster.data.dto
+﻿package com.example.inventorymaster.data.dto
 
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
 
-// 1. 总包裹
+// 1. 总包装
 data class SyncData(
     val session: SessionDto,
     val products: List<ProductDto>,
@@ -22,7 +22,8 @@ data class SessionDto(
 
 // 2. 产品数据模型
 data class ProductDto(
-    val di: String,
+    val productKey: String,
+    val di: String? = null,
     val productName: String,
     val specification: String? = null,
     val model: String? = null,
@@ -35,44 +36,57 @@ data class ProductDto(
 
 // 3. 库存数据模型
 data class StockRecordDto(
+    val id: Long = 0,
     val sessionId: Long,
     val uuid: String?,
-    val di: String,
+    val productKey: String,
     val batchNumber: String,
     val expiryDate: Long,
     val quantity: Double,
     val actualQuantity: Double? = null,
     val location: String? = null,
     val remarks: String? = null,
+    val operator: String? = null,
     val sourceType: Int = 0,
-    val lastUpdateTime: Long? = 0
+    val lastUpdateTime: Long? = 0,
+    val syncStatus: Int = 0
+)
+
+// Phase 5: 增量拉取响应（记录 + 关联产品）
+data class PullResponse(
+    val records: List<StockRecordDto>,
+    val products: List<ProductDto>
 )
 
 //增量上传的专用请求包
 data class PushRequest(
-    val records: List< StockRecordDto>, // 或者 StockRecordDto，取决于你API定义，你目前用的是 Entity
+    val records: List< StockRecordDto>, // 或者StockRecordDto，取决于你API定义，你目前用的是Entity
     val products: List<ProductDto>  // 顺便带上产品资料
 )
 
 // 扩展函数：将 Entity 转为 DTO
 fun StockRecord.toDto(): StockRecordDto {
     return StockRecordDto(
+        id = this.id,
         sessionId = this.sessionId,
         uuid = this.uuid,
-        di = this.di,
+        productKey = this.productKey,
         batchNumber = this.batchNumber,
         expiryDate = this.expiryDate,
         quantity = this.quantity,
         actualQuantity = this.actualQuantity,
         location = this.location,
         remarks = this.remarks,
+        operator = this.operator,
         sourceType = this.sourceType,
-        lastUpdateTime = this.lastUpdateTime
+        lastUpdateTime = this.lastUpdateTime,
+        syncStatus = this.syncStatus
     )
 }
 
 fun ProductBase.toDto(): ProductDto {
     return ProductDto(
+        productKey = this.productKey,
         di = this.di,
         productName = this.productName,
         specification = this.specification ?: "",
@@ -85,3 +99,17 @@ fun ProductBase.toDto(): ProductDto {
     )
 }
 
+fun ProductDto.toEntity(): com.example.inventorymaster.data.entity.ProductBase {
+    return com.example.inventorymaster.data.entity.ProductBase(
+        productKey = this.productKey,
+        di = this.di,
+        productName = this.productName,
+        specification = this.specification ?: "",
+        model = this.model ?: "",
+        manufacturer = this.manufacturer ?: "",
+        materialCode = this.materialCode ?: "",
+        unit = this.unit ?: "",
+        categoryCode = this.categoryCode ?: "",
+        registrationCert = this.registrationCert ?: ""
+    )
+}

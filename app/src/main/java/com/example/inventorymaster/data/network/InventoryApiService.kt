@@ -1,5 +1,6 @@
 package com.example.inventorymaster.data.network
 
+import com.example.inventorymaster.data.dto.PullResponse
 import com.example.inventorymaster.data.dto.PushRequest
 import com.example.inventorymaster.data.dto.SyncData
 import com.example.inventorymaster.data.entity.StockRecord
@@ -33,7 +34,7 @@ interface InventoryApiService {
     suspend fun pullData(
         @Query("sessionUuid") sessionUuid: String,
         @Query("lastSyncTime")lastSyncTime:Long
-    ): Response<List<StockRecord>>
+    ): Response<PullResponse>
 
     // --- 统一的构建器 ---
     companion object {

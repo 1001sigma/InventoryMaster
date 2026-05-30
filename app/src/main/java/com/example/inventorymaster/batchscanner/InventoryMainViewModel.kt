@@ -120,7 +120,7 @@ class InventoryMainViewModel(
                     val di = parseResult.di!!
                     val batch = parseResult.batch ?: "无批号"
 
-                    val product = repository.getProductByDi(di)
+                    val product = repository.getProductByKey(di)
                     val finalProductName = product?.productName ?: "未知商品"
                     val isUnknown = product?.productName == null
 

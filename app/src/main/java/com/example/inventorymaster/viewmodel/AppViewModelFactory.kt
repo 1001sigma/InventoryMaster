@@ -18,7 +18,7 @@ class AppViewModelFactory(
             return SessionViewModel(repository) as T
         }
         if (modelClass.isAssignableFrom(InventoryViewModel::class.java)) {
-            return InventoryViewModel(repository, settingsRepository) as T
+            return InventoryViewModel(application, repository, settingsRepository) as T
         }
         if (modelClass.isAssignableFrom(SettingsViewModel::class.java)) {
             return SettingsViewModel(settingsRepository) as T

@@ -14,7 +14,7 @@ import com.example.inventorymaster.data.entity.StockRecord
 // 1. 声明包含的表和版本号
 @Database(
     entities = [ProductBase::class, InventorySession::class, StockRecord::class],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {

@@ -227,7 +227,7 @@ fun MainScreen(
                 enterTransition = { fadeIn(initialAlpha = 0.4f) },
                 exitTransition = { fadeOut(targetAlpha = 0.4f) }
             ) {
-                SettingsScreen(viewModel = settingsViewModel)
+                SettingsScreen(viewModel = settingsViewModel, inventoryViewModel = inventoryViewModel)
             }
 
             // 使用 navigation 将这三个页面打包。进入这个 flow 默认先显示 "taskDetail"

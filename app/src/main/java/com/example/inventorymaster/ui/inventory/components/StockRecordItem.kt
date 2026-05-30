@@ -70,7 +70,7 @@ fun StockRecordItem(uiModel: StockRecordUiModel) {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = product?.productName ?: "未录入产品 (${record.di})",
+                        text = product?.productName ?: "未录入产品 (${record.productKey})",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
@@ -90,7 +90,7 @@ fun StockRecordItem(uiModel: StockRecordUiModel) {
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "${product.di} ${product.model ?: ""}".trim(),
+                                text = "${product.di ?: ""} ${product.model ?: ""}".trim(),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.background(if (highlightField == HighlightField.DI) highlightBg else Color.Transparent)

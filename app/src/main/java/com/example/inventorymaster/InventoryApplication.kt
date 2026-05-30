@@ -3,6 +3,7 @@ package com.example.inventorymaster
 import android.app.Application
 import com.example.inventorymaster.data.AppDatabase
 import com.example.inventorymaster.data.SettingsRepository
+import com.example.inventorymaster.data.sync.TimestampManager
 import com.example.inventorymaster.data.repository.InventoryRepository
 import com.example.inventorymaster.data.repository.InventoryRepositoryImpl
 
@@ -13,6 +14,9 @@ class InventoryApplication : Application() {
     // 2. 初始化设置仓库 (DataStore)，统一管理所有配置
     val settingsRepository by lazy { SettingsRepository(this) }
 
+    // Phase 2: 统一时间戳管理器（双锚点：pull / push）
+    val timestampManager by lazy { TimestampManager(this) }
+
     // 3. 初始化仓库 (Repository)，供 ViewModel 使用
     // [重构] 用 SettingsRepository 替代 SharedPreferences，统一配置管理
     val repository: InventoryRepository by lazy {
@@ -20,7 +24,8 @@ class InventoryApplication : Application() {
             productDao = database.productDao(),
             sessionDao = database.sessionDao(),
             stockRecordDao = database.stockRecordDao(),
-            settingsRepository = settingsRepository
+            settingsRepository = settingsRepository,
+            timestampManager = timestampManager
         )
     }
 }

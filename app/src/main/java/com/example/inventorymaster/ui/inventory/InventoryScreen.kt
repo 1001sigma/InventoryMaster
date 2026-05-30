@@ -83,19 +83,26 @@ import com.example.inventorymaster.viewmodel.SessionViewModel
 import com.example.inventorymaster.viewmodel.SyncIntent
 import com.example.inventorymaster.viewmodel.SyncViewModel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import com.example.inventorymaster.ui.theme.StatusSuccess
 import com.example.inventorymaster.ui.theme.StatusWarning
+import com.example.inventorymaster.data.model.MappingTemplate
 import com.example.inventorymaster.ui.inventory.components.AddRecordDialog
 import com.example.inventorymaster.ui.inventory.components.AuditRecordDialog
+import com.example.inventorymaster.ui.inventory.components.MappingConfigDialog
 import com.example.inventorymaster.ui.inventory.components.ModeSwitcher
 import com.example.inventorymaster.ui.inventory.components.RecordDetailDialog
 import com.example.inventorymaster.ui.inventory.components.RecordOptionDialog
 import com.example.inventorymaster.ui.inventory.components.SearchBarArea
 import com.example.inventorymaster.ui.inventory.components.StockRecordItem
+import com.example.inventorymaster.ui.inventory.components.TemplateSelectionDialog
+import com.example.inventorymaster.utils.ExcelUtils
+
+enum class ImportMode { TEMPLATE, NEW_MAPPING, QUICK }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -144,6 +151,14 @@ fun InventoryScreen(
 
     var isQuickCheckMode by remember { mutableStateOf(false) }
     var showDetailDialog by remember { mutableStateOf(false) }
+
+    // Excel 映射导入相关状态
+    var pendingImportMode by remember { mutableStateOf(ImportMode.QUICK) }
+    var showTemplateSelectionDialog by remember { mutableStateOf(false) }
+    var showMappingConfigDialog by remember { mutableStateOf(false) }
+    var excelHeaders by remember { mutableStateOf<List<String>>(emptyList()) }
+    var pendingExcelUri by remember { mutableStateOf<Uri?>(null) }
+    var selectedTemplateForMapping by remember { mutableStateOf<MappingTemplate?>(null) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -204,14 +219,33 @@ fun InventoryScreen(
         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    // 定义文件选择器
+    // 定义文件选择器（三种导入模式分流）
     val excelLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
-        uri?.let {
-            // UI 只负责：拿到 Uri -> 丢给 ViewModel
-            inventoryViewModel.importExcelFile(context,it,sessionId)
-            Toast.makeText(context, "已导入文件", Toast.LENGTH_SHORT).show()
+        uri?.let { selectedUri ->
+            when (pendingImportMode) {
+                ImportMode.QUICK -> {
+                    inventoryViewModel.importExcelFile(context, selectedUri, sessionId)
+                    Toast.makeText(context, "已导入文件", Toast.LENGTH_SHORT).show()
+                }
+                ImportMode.NEW_MAPPING, ImportMode.TEMPLATE -> {
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        try {
+                            val headers = ExcelUtils.parseHeaders(context, selectedUri)
+                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                excelHeaders = headers
+                                pendingExcelUri = selectedUri
+                                showMappingConfigDialog = true
+                            }
+                        } catch (e: Exception) {
+                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                Toast.makeText(context, "读取表头失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -357,7 +391,8 @@ fun InventoryScreen(
                                     leadingIcon = { Icon(Icons.Default.FileOpen, contentDescription = null) },
                                     onClick = {
                                         showMoreMenu = false
-                                        excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"))
+                                        inventoryViewModel.loadMappingTemplates()
+                                        showTemplateSelectionDialog = true
                                     }
                                 )
                             }
@@ -535,22 +570,26 @@ fun InventoryScreen(
                                                     !isInventoryMode -> {
                                                         selectedRecord = combined
                                                         showDetailDialog = true
-
                                                     }
-                                                    // 2. 盘点-普通模式：点击弹出操作菜单 (前提是没被锁定)
+                                                    // 2. 盘点-普通模式：手动新增弹出操作菜单，Excel/云端弹出查验弹窗
                                                     isInventoryMode && !isQuickCheckMode && !isReadOnly -> {
                                                         selectedRecord = combined
-                                                        showOptionDialog = true
+                                                        if (record.sourceType == 0) {
+                                                            showOptionDialog = true
+                                                        } else {
+                                                            showEditDialog = true
+                                                        }
                                                     }
                                                 }
                                             },
                                             onLongClick = {
-                                                // ... 长按逻辑 ...
-                                                when {
-                                                    //盘点-极速模式：长按才弹出操作菜单 (作为极速模式下的补充操作)
-                                                    isInventoryMode && isQuickCheckMode && !isReadOnly -> {
-                                                        selectedRecord = combined
+                                                // 盘点-极速模式：手动记录弹出操作菜单，Excel/云端弹出查验弹窗
+                                                if (isInventoryMode && isQuickCheckMode && !isReadOnly) {
+                                                    selectedRecord = combined
+                                                    if (record.sourceType == 0) {
                                                         showOptionDialog = true
+                                                    } else {
+                                                        showEditDialog = true
                                                     }
                                                 }
                                             }
@@ -660,6 +699,62 @@ fun InventoryScreen(
         }
     }
 
+    // Excel 导入方式选择对话框
+    if (showTemplateSelectionDialog) {
+        TemplateSelectionDialog(
+            templates = inventoryViewModel.getCachedTemplates(),
+            onTemplateSelected = { template ->
+                showTemplateSelectionDialog = false
+                selectedTemplateForMapping = template
+                pendingImportMode = ImportMode.TEMPLATE
+                excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"))
+            },
+            onNewMapping = {
+                showTemplateSelectionDialog = false
+                selectedTemplateForMapping = null
+                pendingImportMode = ImportMode.NEW_MAPPING
+                excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"))
+            },
+            onQuickImport = {
+                showTemplateSelectionDialog = false
+                pendingImportMode = ImportMode.QUICK
+                excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"))
+            },
+            onDismiss = { showTemplateSelectionDialog = false }
+        )
+    }
+
+    // 列映射配置对话框
+    if (showMappingConfigDialog && pendingExcelUri != null) {
+        val initialMapping = selectedTemplateForMapping?.toFieldMap() ?: emptyMap()
+        val initialName = selectedTemplateForMapping?.name ?: ""
+
+        MappingConfigDialog(
+            headers = excelHeaders,
+            initialMapping = initialMapping,
+            initialTemplateName = initialName,
+            existingTemplateId = selectedTemplateForMapping?.id,
+            onConfirm = { mapping, saveAsTemplateName ->
+                showMappingConfigDialog = false
+                if (saveAsTemplateName != null) {
+                    inventoryViewModel.saveMappingTemplate(
+                        name = saveAsTemplateName,
+                        fieldMap = mapping,
+                        existingId = selectedTemplateForMapping?.id
+                    )
+                }
+                inventoryViewModel.importExcelFileWithMapping(
+                    context, pendingExcelUri!!, sessionId, mapping
+                )
+                Toast.makeText(context, "正在导入...", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = {
+                showMappingConfigDialog = false
+                pendingExcelUri = null
+            }
+        )
+    }
+
     //挂载对话框
     if (showAddDialog) {
         AddRecordDialog(
@@ -740,10 +835,10 @@ fun InventoryScreen(
                     LazyColumn(modifier = Modifier.weight(1f, fill = false).fillMaxWidth()) {
                         items(uiState.invalidDiList) { item ->
                             val pName = item.product?.productName ?: "未知产品"
-                            val di = item.record.di
+                            val key = item.record.productKey
                             Column(modifier = Modifier.padding(vertical = 6.dp)) {
                                 Text(text = pName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                Text(text = "DI: $di", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(text = "Key: $key", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
                         }
@@ -760,7 +855,7 @@ fun InventoryScreen(
                     // 一键复制功能
                     TextButton(onClick = {
                         val textToCopy = uiState.invalidDiList.joinToString("\n") {
-                            "${it.product?.productName ?: "未知产品"} - ${it.record.di}"
+                            "${it.product?.productName ?: "未知产品"} - ${it.record.productKey}"
                         }
                         clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(textToCopy))
                         Toast.makeText(context, "已复制到剪贴板", Toast.LENGTH_SHORT).show()

@@ -63,7 +63,6 @@ class SyncViewModel(private val repository: InventoryRepository) : ViewModel() {
      * 🔥 中央调度器：UI 只能调用这一个方法，并传入指令
      */
     fun handleIntent(intent: SyncIntent) {
-        // 如果当前正在同步，直接忽略新的请求 (你也可以根据业务需求改成排队)
         if (isSyncRunning) return
 
         viewModelScope.launch {

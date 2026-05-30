@@ -44,7 +44,7 @@ fun AddRecordDialog(
     sessionId: Long,
     existingRecord: StockRecord? = null
 ) {
-    var di by remember { mutableStateOf(existingRecord?.di ?: "") }
+    var productKey by remember { mutableStateOf(existingRecord?.productKey ?: "") }
     var batch by remember { mutableStateOf(existingRecord?.batchNumber ?: "") }
     var qty by remember { mutableStateOf(existingRecord?.quantity?.toString() ?: "") }
     var location by remember { mutableStateOf(existingRecord?.location ?: "") }
@@ -55,7 +55,7 @@ fun AddRecordDialog(
         title = { Text(if (existingRecord == null) "新增记录" else "修改记录") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = di, onValueChange = { di = it }, label = { Text("产品 DI/条码") })
+                OutlinedTextField(value = productKey, onValueChange = { productKey = it }, label = { Text("产品Key/条码") })
                 OutlinedTextField(value = batch, onValueChange = { batch = it }, label = { Text("批号") })
                 OutlinedTextField(value = expiry, onValueChange = { expiry = it }, label = { Text("效期 (如 20251231)") })
                 OutlinedTextField(value = location, onValueChange = { location = it }, label = { Text("库位") })
@@ -64,14 +64,15 @@ fun AddRecordDialog(
         },
         confirmButton = {
             Button(onClick = {
-                if (di.isNotBlank() && qty.isNotBlank()) {
+                if (productKey.isNotBlank() && qty.isNotBlank()) {
                     val newRecord = StockRecord(
                         sessionId = sessionId,
-                        di = di,
+                        productKey = productKey,
                         batchNumber = batch,
                         expiryDate = expiry.toLongOrNull() ?: 0L,
                         quantity = qty.toDoubleOrNull() ?: 0.0,
-                        location = location
+                        location = location,
+                        sourceType = 0
                     )
                     onConfirm(newRecord)
                 }
@@ -97,8 +98,9 @@ fun RecordDetailDialog(combined: StockRecordCombined, onDismiss: () -> Unit) {
                 if (product != null) {
                     Text("物料名称: ${product.productName}")
                 }
-                Text("UDI: ${record.di}")
+                Text("产品Key: ${record.productKey}")
                 if (product != null) {
+                    Text("DI: ${product.di}")
                     Text("物料编码: ${product.materialCode}")
                 }
                 Text("批号: ${record.batchNumber}")
@@ -179,7 +181,7 @@ fun AuditRecordDialog(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Column(modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)).padding(8.dp).fillMaxWidth()) {
                     Text(
-                        text = product?.productName ?: "未知产品 (${record.di})",
+                        text = product?.productName ?: "未知产品 (${record.productKey})",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
