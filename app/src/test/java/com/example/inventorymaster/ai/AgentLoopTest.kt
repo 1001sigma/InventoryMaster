@@ -19,6 +19,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -34,10 +35,11 @@ class AgentLoopTest {
 
     // ── 测试替身 ──────────────────────────────────────────────
 
-    /** 按脚本依次返回响应；脚本耗尽则抛错（防止测试静默走过头） */
+    /** 按脚本依次返回响应；流式能力开启时 streamChat 逐组消费 streamScript */
     private class FakeAiService(
         override val capabilities: AiCapabilities = AiCapabilities(functionCalling = true, streaming = false),
         private val script: List<AiResponse> = emptyList(),
+        private val streamScript: List<List<StreamChunk>> = emptyList(),
         private val alwaysThrow: AiServiceException? = null,
         private val hangForever: Boolean = false
     ) : AiService {
@@ -45,7 +47,11 @@ class AgentLoopTest {
         /** 每次 chat 的 (messages, tools) 快照，供断言请求形态 */
         val calls = mutableListOf<Pair<List<AiMessage>, List<AiToolDefinition>?>>()
 
+        /** 每次 streamChat 的 tools 快照 */
+        val streamCalls = mutableListOf<List<AiToolDefinition>?>()
+
         private var cursor = 0
+        private var streamCursor = 0
 
         override suspend fun chat(
             messages: List<AiMessage>,
@@ -63,7 +69,12 @@ class AgentLoopTest {
             messages: List<AiMessage>,
             systemPrompt: String?,
             tools: List<AiToolDefinition>?
-        ): Flow<StreamChunk> = error("AgentLoopTest 不覆盖流式路径")
+        ): Flow<StreamChunk> = flow {
+            streamCalls += tools
+            val chunks = streamScript.getOrNull(streamCursor++)
+                ?: error("FakeAiService 流式脚本耗尽（第 $streamCursor 次）")
+            chunks.forEach { emit(it) }
+        }
 
         override suspend fun isAvailable(): Boolean = true
     }
@@ -341,6 +352,95 @@ class AgentLoopTest {
         assertEquals("直接回答：共 5 条", (events.last() as AgentEvent.Response).content)
         // 纠正提示写入了记忆
         assertTrue(memory.messagesForRequest().any { it.role == "user" && it.content.orEmpty().contains("无法解析为工具调用 JSON") })
+        assertPairingValid(memory.messagesForRequest())
+    }
+
+    // ── 流式路径（v3 二期 §4.8）────────────────────────────
+
+    @Test
+    fun `流式FC模型_文本增量实时下发`() = runBlocking {
+        val service = FakeAiService(
+            capabilities = AiCapabilities(functionCalling = true, streaming = true),
+            streamScript = listOf(
+                listOf(StreamChunk.Text("你"), StreamChunk.Text("好"), StreamChunk.Completed)
+            )
+        )
+        val (agent, memory) = newAgent(service, FakeTool("query_records"))
+
+        val events = collect(agent, "你好")
+
+        assertEquals(listOf("你", "好"), events.filterIsInstance<AgentEvent.ResponseChunk>().map { it.content })
+        assertEquals("你好", (events.last() as AgentEvent.Response).content)
+        assertPairingValid(memory.messagesForRequest())
+    }
+
+    @Test
+    fun `流式FC模型_工具调用分片聚合后执行`() = runBlocking {
+        val tool = FakeTool("query_records")
+        val service = FakeAiService(
+            capabilities = AiCapabilities(functionCalling = true, streaming = true),
+            streamScript = listOf(
+                listOf(
+                    StreamChunk.ToolCallDelta(0, id = "c1", name = "query_records"),
+                    StreamChunk.ToolCallDelta(0, argumentsDelta = "{\"lim"),
+                    StreamChunk.ToolCallDelta(0, argumentsDelta = "it\":3}"),
+                    StreamChunk.Completed
+                ),
+                listOf(StreamChunk.Text("共 3 条"), StreamChunk.Completed)
+            )
+        )
+        val (agent, memory) = newAgent(service, tool)
+
+        val events = collect(agent, "查3条")
+
+        assertEquals(1, tool.executeCount)
+        assertEquals(3, tool.lastArgs?.get("limit")?.asInt)
+        assertTrue(events.any { it is AgentEvent.ToolCallStart })
+        assertTrue(events.any { it is AgentEvent.ResponseChunk })
+        assertEquals("共 3 条", (events.last() as AgentEvent.Response).content)
+        assertPairingValid(memory.messagesForRequest())
+    }
+
+    @Test
+    fun `JSON协议流式正文不外泄给UI`() = runBlocking {
+        val tool = FakeTool("query_records")
+        val service = FakeAiService(
+            capabilities = AiCapabilities(functionCalling = false, streaming = true),
+            streamScript = listOf(
+                listOf(
+                    StreamChunk.Text("{\"tool\":\"query_records\""),
+                    StreamChunk.Text(",\"arguments\":{\"limit\":2}}"),
+                    StreamChunk.Completed
+                ),
+                listOf(StreamChunk.Text("直接回答：共 2 条"), StreamChunk.Completed)
+            )
+        )
+        val (agent, memory) = newAgent(service, tool)
+
+        val events = collect(agent, "查2条")
+
+        // JSON 信封与普通回答都不应产生 ResponseChunk（外显交给最终 Response）
+        assertEquals(0, events.filterIsInstance<AgentEvent.ResponseChunk>().size)
+        assertEquals(1, tool.executeCount)
+        assertEquals(2, tool.lastArgs?.get("limit")?.asInt)
+        assertEquals("直接回答：共 2 条", (events.last() as AgentEvent.Response).content)
+        assertPairingValid(memory.messagesForRequest())
+    }
+
+    @Test
+    fun `流式空结果降级为非流式重试一次`() = runBlocking {
+        val service = FakeAiService(
+            capabilities = AiCapabilities(functionCalling = true, streaming = true),
+            streamScript = listOf(listOf(StreamChunk.Completed)),
+            script = listOf(AiResponse("降级回答"))
+        )
+        val (agent, memory) = newAgent(service, FakeTool("query_records"))
+
+        val events = collect(agent, "你好")
+
+        assertEquals(1, service.streamCalls.size)
+        assertEquals(1, service.calls.size)
+        assertEquals("降级回答", (events.last() as AgentEvent.Response).content)
         assertPairingValid(memory.messagesForRequest())
     }
 }

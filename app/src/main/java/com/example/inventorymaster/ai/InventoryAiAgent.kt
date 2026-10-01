@@ -5,6 +5,7 @@ import com.example.inventorymaster.ai.agent.ActionResultExtractor
 import com.example.inventorymaster.ai.agent.AgentEvent
 import com.example.inventorymaster.ai.agent.AiAgent
 import com.example.inventorymaster.ai.agent.UiAction
+import com.example.inventorymaster.ai.agent.ToolCallAccumulator
 import com.example.inventorymaster.ai.agent.strategy.FunctionCallingStrategy
 import com.example.inventorymaster.ai.agent.strategy.JsonToolCallStrategy
 import com.example.inventorymaster.ai.agent.strategy.ToolCallOutcome
@@ -12,9 +13,12 @@ import com.example.inventorymaster.ai.agent.strategy.ToolCallStrategy
 import com.example.inventorymaster.ai.memory.ConversationMemory
 import com.example.inventorymaster.ai.prompt.PromptBuilder
 import com.example.inventorymaster.ai.provider.AiErrorKind
+import com.example.inventorymaster.ai.provider.AiResponse
 import com.example.inventorymaster.ai.provider.AiService
 import com.example.inventorymaster.ai.provider.AiServiceException
 import com.example.inventorymaster.ai.provider.AiToolCall
+import com.example.inventorymaster.ai.provider.AiToolDefinition
+import com.example.inventorymaster.ai.provider.StreamChunk
 import com.example.inventorymaster.ai.tools.ToolExecutor
 import com.example.inventorymaster.ai.tools.ToolPermission
 import com.example.inventorymaster.ai.tools.ToolPermissionManager
@@ -59,6 +63,45 @@ class InventoryAiAgent(
         pendingConfirms.remove(requestId)?.complete(approved)
     }
 
+    /**
+     * 单轮模型调用。支持流式的服务商走 streamChat：文本增量实时下发（ResponseChunk），
+     * 工具调用分片由 [ToolCallAccumulator] 按累积成完整调用（docs/AI_V3_REDESIGN.md §4.8）。
+     * JSON 文本协议模型的正文可能是工具信封，不外泄给 UI（仅 FC 模型实时外显）。
+     * 流式空结果（既无文本也无分片）降级为一次非流式调用。
+     */
+    private suspend fun callModelRound(
+        send: suspend (AgentEvent) -> Unit,
+        systemPrompt: String,
+        toolDefs: List<AiToolDefinition>,
+        useTools: Boolean
+    ): AiResponse {
+        val tools = if (useTools) toolDefs else null
+        val messages = memory.messagesForRequest()
+        if (!aiService.capabilities.streaming) {
+            return withTimeout(LLM_TIMEOUT_MS) { aiService.chat(messages, systemPrompt, tools) }
+        }
+        val content = StringBuilder()
+        val accumulator = ToolCallAccumulator()
+        withTimeout(LLM_TIMEOUT_MS) {
+            aiService.streamChat(messages, systemPrompt, tools).collect { chunk ->
+                when (chunk) {
+                    is StreamChunk.Text -> {
+                        content.append(chunk.text)
+                        if (aiService.capabilities.functionCalling) send(AgentEvent.ResponseChunk(chunk.text))
+                    }
+                    is StreamChunk.ToolCallDelta -> accumulator.add(chunk)
+                    is StreamChunk.Completed -> Unit
+                    is StreamChunk.Error -> throw AiServiceException(AiErrorKind.UNREACHABLE, chunk.message)
+                }
+            }
+        }
+        if (content.isBlank() && accumulator.isEmpty()) {
+            return withTimeout(LLM_TIMEOUT_MS) { aiService.chat(messages, systemPrompt, tools) }
+        }
+        val toolCalls = accumulator.toToolCalls()
+        return AiResponse(content = content.toString(), toolCalls = toolCalls.takeIf { it.isNotEmpty() })
+    }
+
     override suspend fun chat(message: String): Flow<AgentEvent> = channelFlow {
         memory.openUserTurn(message)
         try {
@@ -79,13 +122,7 @@ class InventoryAiAgent(
 
             for (round in 0 until MAX_ROUNDS) {
                 val response = try {
-                    withTimeout(LLM_TIMEOUT_MS) {
-                        aiService.chat(
-                            messages = memory.messagesForRequest(),
-                            systemPrompt = systemPrompt,
-                            tools = if (useTools) toolDefs else null
-                        )
-                    }
+                    callModelRound({ send(it) }, systemPrompt, toolDefs, useTools)
                 } catch (e: TimeoutCancellationException) {
                     throw AiServiceException(AiErrorKind.TIMEOUT, "AI 响应超时（${LLM_TIMEOUT_MS / 1000} 秒）", e)
                 }
@@ -194,12 +231,8 @@ class InventoryAiAgent(
                 }
             }
 
-            // 轮次耗尽：不带工具做一次总结性回答
-            val finalResponse = aiService.chat(
-                messages = memory.messagesForRequest(),
-                systemPrompt = systemPrompt,
-                tools = null
-            )
+            // 轮次耗尽：不带工具做一次总结性回答（同样走流式，总结文本实时外显）
+            val finalResponse = callModelRound({ send(it) }, systemPrompt, toolDefs, useTools = false)
             memory.closeTurn(finalResponse.content)
             send(AgentEvent.Response(finalResponse.content))
         } catch (e: CancellationException) {

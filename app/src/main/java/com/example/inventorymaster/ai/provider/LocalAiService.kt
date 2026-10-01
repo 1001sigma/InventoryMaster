@@ -4,9 +4,8 @@ import android.util.Log
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 
 class LocalAiService(
@@ -35,20 +34,18 @@ class LocalAiService(
         messages: List<AiMessage>,
         systemPrompt: String?,
         tools: List<AiToolDefinition>?
-    ): Flow<StreamChunk> = callbackFlow {
+    ): Flow<StreamChunk> = flow {
         try {
             val prompt = buildPrompt(messages, systemPrompt, tools)
             val result = simulateLocalInference(prompt)
-            val chars = result.toCharArray()
-            for (char in chars) {
-                trySend(StreamChunk(content = char.toString()))
+            // 占位推理：模拟逐字流式
+            for (char in result) {
+                emit(StreamChunk.Text(char.toString()))
             }
-            trySend(StreamChunk(isComplete = true))
-            close()
+            emit(StreamChunk.Completed)
         } catch (e: Exception) {
             Log.e("LocalAiService", "Stream failed", e)
-            trySend(StreamChunk(content = "本地模型推理失败: ${e.message}", isComplete = true))
-            close(e)
+            emit(StreamChunk.Error("本地模型推理失败: ${e.message}"))
         }
     }
 

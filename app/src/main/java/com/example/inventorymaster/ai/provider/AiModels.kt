@@ -26,11 +26,30 @@ data class AiToolDefinition(
     val parameters: JsonObject
 )
 
-data class StreamChunk(
-    val content: String? = null,
-    val toolCall: AiToolCall? = null,
-    val isComplete: Boolean = false
-)
+/**
+ * 流式事件（v3 二期密封化，docs/AI_V3_REDESIGN.md §4.8）。
+ * Provider 把各厂商的流式格式翻译成这里的事件；上游（Agent）用 [ToolCallAccumulator]
+ * 把 [ToolCallDelta] 分片聚合成完整 [AiToolCall]。
+ */
+sealed class StreamChunk {
+
+    /** 正文增量 */
+    data class Text(val text: String) : StreamChunk()
+
+    /** 工具调用分片增量：按 index 累积 id/name/arguments（OpenAI delta.tool_calls 格式） */
+    data class ToolCallDelta(
+        val index: Int,
+        val id: String? = null,
+        val name: String? = null,
+        val argumentsDelta: String = ""
+    ) : StreamChunk()
+
+    /** 流正常结束 */
+    data object Completed : StreamChunk()
+
+    /** 流异常结束（连接中断等；Agent 收到后按 AiServiceException 处理） */
+    data class Error(val message: String) : StreamChunk()
+}
 
 /** 服务商能力声明（Agent 据此选择工具调用协议，见 docs/AI_V3_REDESIGN.md §4.1） */
 data class AiCapabilities(

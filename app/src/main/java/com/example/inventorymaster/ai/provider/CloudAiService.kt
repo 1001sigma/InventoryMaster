@@ -12,6 +12,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import okhttp3.Interceptor
@@ -30,6 +31,7 @@ class CloudAiService(
 
     private val gson = Gson()
     private val model = config.model
+    private val streamClient = defaultStreamClient()
 
     override val capabilities = AiCapabilities(
         functionCalling = config.supportsTools,
@@ -126,71 +128,59 @@ class CloudAiService(
         }
     }
 
+    /**
+     * 流式（SSE）：正文与 tool_calls 均以增量事件发出（docs/AI_V3_REDESIGN.md §4.8）。
+     * 使用独立的 [streamClient]——SSE 中途重试不安全，流式 client 不带重试拦截器。
+     */
     override fun streamChat(
         messages: List<AiMessage>,
         systemPrompt: String?,
         tools: List<AiToolDefinition>?
     ): Flow<StreamChunk> = callbackFlow {
-        try {
-            val requestBody = buildRequestBody(messages, systemPrompt, tools, stream = true)
-            val url = "${config.baseUrl}/chat/completions"
+        validateConfig()
+        val requestBody = buildRequestBody(messages, systemPrompt, tools, stream = true)
+        val request = Request.Builder()
+            .url("${config.baseUrl}/chat/completions")
+            .addHeader("Authorization", "Bearer ${config.apiKey}")
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody.toRequestBody("application/json".toMediaType()))
+            .build()
 
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("Authorization", "Bearer ${config.apiKey}")
-                .addHeader("Content-Type", "application/json")
-                .post(requestBody.toRequestBody("application/json".toMediaType()))
-                .build()
-
-            val response = client.newCall(request).execute()
-            val reader = response.body?.charStream() ?: throw Exception("Empty stream")
-
-            val bufferedReader = reader.buffered()
-            var line: String?
-
-            while (bufferedReader.readLine().also { line = it } != null) {
-                val currentLine = line ?: continue
-                if (!currentLine.startsWith("data: ")) continue
-
-                val data = currentLine.removePrefix("data: ").trim()
-                if (data == "[DONE]") {
-                    trySend(StreamChunk(isComplete = true))
-                    break
-                }
-
-                try {
-                    val json = JsonParser.parseString(data).asJsonObject
-                    val choices = json.getAsJsonArray("choices")
-                    if (choices.size() > 0) {
-                        val delta = choices[0].asJsonObject.getAsJsonObject("delta")
-                        if (delta != null && delta.has("content")) {
-                            val content = delta.get("content").asString
-                            if (content.isNotEmpty()) {
-                                trySend(StreamChunk(content = content))
-                            }
-                        }
+        val call = streamClient.newCall(request)
+        launch(Dispatchers.IO) {
+            try {
+                call.execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        val detail = resp.body?.string()?.take(150)?.trim()
+                        trySend(StreamChunk.Error("HTTP ${resp.code}${if (detail.isNullOrBlank()) "" else "：$detail"}"))
+                        return@launch
                     }
-                } catch (e: Exception) {
-                    Log.w("CloudAiService", "Parse stream chunk failed: $currentLine", e)
+                    val reader = resp.body?.charStream()?.buffered()
+                    if (reader == null) {
+                        trySend(StreamChunk.Error("AI 返回了空响应"))
+                        return@launch
+                    }
+                    var done = false
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (!line.startsWith("data:")) continue
+                        for (chunk in SseParser.parse(line.removePrefix("data:").trim())) {
+                            if (chunk is StreamChunk.Completed) done = true
+                            trySend(chunk)
+                        }
+                        if (done) break
+                    }
+                    if (!done) trySend(StreamChunk.Completed)
                 }
+            } catch (e: IOException) {
+                trySend(StreamChunk.Error(networkErrorMessage(e)))
+            } catch (e: Exception) {
+                trySend(StreamChunk.Error("AI 服务出错: ${e.message}"))
+            } finally {
+                runCatching { close() }
             }
-
-            close()
-        } catch (e: IOException) {
-            Log.e("CloudAiService", "Stream network error", e)
-            val msg = if (e.message?.contains("SSL", ignoreCase = true) == true ||
-                e.message?.contains("certificate", ignoreCase = true) == true) {
-                "网络连接失败：SSL 证书验证错误，请检查手机系统时间是否正确"
-            } else {
-                "网络连接失败，请检查网络后重试"
-            }
-            trySend(StreamChunk(content = msg, isComplete = true))
-            close(e)
-        } catch (e: Exception) {
-            Log.e("CloudAiService", "Stream failed", e)
-            trySend(StreamChunk(content = "AI 服务出错: ${e.message}", isComplete = true))
-            close(e)
         }
+        awaitClose { call.cancel() }
     }
 
     override suspend fun isAvailable(): Boolean {
@@ -372,6 +362,24 @@ class CloudAiService(
     companion object {
         private const val MAX_HTTP_ATTEMPTS = 2
         private const val RETRY_DELAY_MS = 800L
+
+        /** 流式专用 client：不带重试拦截器（SSE 中途重试不安全，§4.8） */
+        private fun defaultStreamClient(): OkHttpClient {
+            return OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .build()
+        }
+
+        private fun networkErrorMessage(e: IOException): String {
+            return if (e.message?.contains("SSL", ignoreCase = true) == true ||
+                e.message?.contains("certificate", ignoreCase = true) == true
+            ) {
+                "网络连接失败：SSL 证书验证错误，请检查手机系统时间是否正确"
+            } else {
+                "网络连接失败，请检查网络后重试"
+            }
+        }
 
         private fun defaultClient(): OkHttpClient {
             return OkHttpClient.Builder()
