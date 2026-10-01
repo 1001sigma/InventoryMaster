@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -15,7 +17,7 @@ android {
         // 签名凭据从 app/keystore.properties 读取（该文件已 gitignore，凭据不入库）
         val keystorePropsFile = file("keystore.properties")
         if (keystorePropsFile.exists()) {
-            val keystoreProps = java.util.Properties().apply {
+            val keystoreProps = Properties().apply {
                 keystorePropsFile.inputStream().use { load(it) }
             }
             create("release") {
