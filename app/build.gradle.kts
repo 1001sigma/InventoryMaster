@@ -9,6 +9,23 @@ plugins {
 android {
     namespace = "com.example.inventorymaster"
     compileSdk = 35
+    ndkVersion = "30.0.14904198"
+
+    signingConfigs {
+        // 签名凭据从 app/keystore.properties 读取（该文件已 gitignore，凭据不入库）
+        val keystorePropsFile = file("keystore.properties")
+        if (keystorePropsFile.exists()) {
+            val keystoreProps = java.util.Properties().apply {
+                keystorePropsFile.inputStream().use { load(it) }
+            }
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile", "inventorymaster.jks"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.example.inventorymaster"
@@ -18,11 +35,23 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += ""
+                arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
+            signingConfig = signingConfigs.findByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -36,8 +65,22 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
+    testOptions {
+        unitTests {
+            // 纯 JVM 单测中 android.util.Log 等框架方法返回默认值而非抛异常
+            // （InventoryAiAgent 的日志路径，docs/AI_V3_REDESIGN.md §5）
+            isReturnDefaultValues = true
+        }
+    }
     buildFeatures {
         compose = true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "4.1.2"
+        }
     }
 }
 
@@ -75,6 +118,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
+    implementation("androidx.camera:camera-video:$cameraxVersion")
     // Google ML Kit 条码扫描
     implementation("com.google.mlkit:barcode-scanning:17.2.0")
     // 图标扩展 (如果还没加的话)
@@ -102,4 +146,19 @@ dependencies {
 
     // 👇 3. 新增：kotlinx.serialization 的 JSON 核心解析库
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+
+    implementation ("com.itextpdf:itext7-core:7.2.5")
+
+    // OkHttp (AI 云端 API 调用)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // ========== OpenCV 视觉模块 ==========
+    // 官方 OpenCV Android SDK（Maven Central）
+    implementation("org.opencv:opencv:4.10.0")
+
+    // ========== ONNX Runtime (YOLO 推理) ==========
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
+
+    // ========== Markdown 渲染 ==========
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.28.0")
 }
