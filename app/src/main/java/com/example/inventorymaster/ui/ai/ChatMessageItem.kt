@@ -21,6 +21,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -40,7 +44,7 @@ import com.example.inventorymaster.viewmodel.ChatMessage
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ChatMessageItem(message: ChatMessage) {
+fun ChatMessageItem(message: ChatMessage, showThinking: Boolean = true) {
     val isUser = message.isUser
     val isToolCall = message.isToolCall
     val isError = message.role == "error"
@@ -50,6 +54,9 @@ fun ChatMessageItem(message: ChatMessage) {
         clipboardManager.setText(AnnotatedString(message.content))
         Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
     }
+    val expandable = showThinking && message.detail != null
+    var expanded by remember { mutableStateOf(false) }
+    val detail = message.detail
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -88,7 +95,10 @@ fun ChatMessageItem(message: ChatMessage) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .combinedClickable(onClick = {}, onLongClick = copyText)
+                    .combinedClickable(
+                        onClick = { if (expandable) expanded = !expanded },
+                        onLongClick = copyText
+                    )
             ) {
                 when {
                     isToolCall -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -105,8 +115,18 @@ fun ChatMessageItem(message: ChatMessage) {
                             text = message.content,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.alpha(0.8f)
+                            modifier = Modifier
+                                .alpha(0.8f)
+                                .weight(1f, fill = false)
                         )
+                        if (expandable) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (expanded) "收起 ▴" else "详情 ▾",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                     isError -> Text(
                         text = message.content,
@@ -116,6 +136,15 @@ fun ChatMessageItem(message: ChatMessage) {
                     else -> MarkdownText(
                         text = message.content,
                         modifier = Modifier
+                    )
+                }
+                if (expandable && expanded && detail != null) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.alpha(0.85f)
                     )
                 }
                 if (message.isLoading && !isToolCall) {

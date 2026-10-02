@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -39,7 +40,9 @@ data class ChatMessage(
     val isUser: Boolean,
     val isToolCall: Boolean = false,
     val isLoading: Boolean = false,
-    val cardAction: UiAction.ShowProductCardList? = null
+    val cardAction: UiAction.ShowProductCardList? = null,
+    /** 思维链折叠内容（工具调用的完整参数与结果；null=不可展开） */
+    val detail: String? = null
 )
 
 /** CONFIRM 权限工具的待确认请求 */
@@ -93,6 +96,12 @@ class ChatViewModel(
 
     private val _chatThreads = MutableStateFlow<List<ChatThreadInfo>>(emptyList())
     val chatThreads: StateFlow<List<ChatThreadInfo>> = _chatThreads.asStateFlow()
+
+    /** 思维链折叠卡片开关（设置 → AI 助手） */
+    val showThinking: StateFlow<Boolean> = settingsRepository.settingsFlow
+        .map { it.aiShowThinking }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, true)
 
     init {
         viewModelScope.launch {
@@ -234,7 +243,8 @@ class ChatViewModel(
                                 it.copy(
                                     messages = it.messages + ChatMessage(
                                         role = "tool",
-                                        content = "正在调用 ${event.toolName}...",
+                                        content = if (event.argumentsSummary.isBlank()) "正在调用 ${event.toolName}..."
+                                        else "调用 ${event.toolName}(${event.argumentsSummary})",
                                         isUser = false,
                                         isToolCall = true,
                                         isLoading = true
@@ -244,11 +254,15 @@ class ChatViewModel(
                         }
                         is AgentEvent.ToolCallResult -> {
                             _uiState.update { state ->
+                                val firstLine = event.result.lineSequence().firstOrNull()?.take(60) ?: "返回结果"
                                 val updatedMessages = state.messages.dropLast(1) + ChatMessage(
                                     role = "tool",
-                                    content = "${event.toolName} 返回结果",
+                                    content = "${event.toolName} · $firstLine",
                                     isUser = false,
-                                    isToolCall = true
+                                    isToolCall = true,
+                                    detail = buildString {
+                                        append("结果：\n${event.result}")
+                                    }
                                 )
                                 state.copy(messages = updatedMessages)
                             }

@@ -70,7 +70,7 @@ class ConversationMemoryTest {
         val memory = ConversationMemory()
         memory.openUserTurn("问题")
         memory.appendAssistantToolCalls(null, listOf(toolCall("c1")))
-        val big = "x".repeat(5000)
+        val big = "x".repeat(9000)
         memory.appendToolResult("c1", "query_records", big)
         memory.closeTurn("完成")
 

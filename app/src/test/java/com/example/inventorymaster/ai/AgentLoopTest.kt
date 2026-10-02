@@ -223,21 +223,22 @@ class AgentLoopTest {
     }
 
     @Test
-    fun `同一工具连续三轮未决被截断`() = runBlocking {
+    fun `同一工具连续四轮未决被截断`() = runBlocking {
         val tool = FakeTool("query_records")
         val service = FakeAiService(
             script = listOf(
                 AiResponse(content = "", toolCalls = listOf(call("c1", "query_records", "{\"a\":1}"))),
                 AiResponse(content = "", toolCalls = listOf(call("c2", "query_records", "{\"a\":2}"))),
-                AiResponse(content = "", toolCalls = listOf(call("c3", "query_records", "{\"a\":3}")))
+                AiResponse(content = "", toolCalls = listOf(call("c3", "query_records", "{\"a\":3}"))),
+                AiResponse(content = "", toolCalls = listOf(call("c4", "query_records", "{\"a\":4}")))
             )
         )
         val (agent, memory) = newAgent(service, tool)
 
         val events = collect(agent, "查询")
 
-        // 第三轮在执行前被截断，只真正执行了两次
-        assertEquals(2, tool.executeCount)
+        // 第四轮在执行前被截断，只真正执行了三次
+        assertEquals(3, tool.executeCount)
         assertTrue((events.last() as AgentEvent.Response).content.contains("连续执行多次"))
         assertPairingValid(memory.messagesForRequest())
     }

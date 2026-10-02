@@ -9,7 +9,11 @@ interface AiAgent {
 
 sealed class AgentEvent {
     data class Thinking(val message: String) : AgentEvent()
-    data class ToolCallStart(val toolName: String) : AgentEvent()
+    data class ToolCallStart(
+        val toolName: String,
+        /** 参数摘要（思维链卡片展示用） */
+        val argumentsSummary: String = ""
+    ) : AgentEvent()
     data class ToolCallResult(val toolName: String, val result: String) : AgentEvent()
 
     /** CONFIRM 权限工具：等待用户在 UI 上确认/拒绝（requestId 经 respondConfirm 回传） */

@@ -179,7 +179,9 @@ class InventoryAiAgent(
                         } else {
                             sameToolStreak = 0
                         }
-                        if (sameToolStreak >= 3) {
+                        // 同一工具连续调用 N 轮仍未得出结论。N=4：给合理的一次参数修正重试留空间
+                        // （实机证据：模型因结果截断而用 limit 重试一次属正常行为，3 轮误杀）
+                        if (sameToolStreak >= 4) {
                             Log.w(TAG, "工具 ${lastSingleToolName} 连续调用 $sameToolStreak 轮，截断")
                             val msg = "同一查询连续执行多次未得出结论，已中止。请换一种问法或缩小查询范围。"
                             memory.closeTurn(msg)
@@ -188,6 +190,10 @@ class InventoryAiAgent(
                         }
 
                         memory.appendAssistantToolCalls(response.content.ifBlank { null }, calls)
+                        // 思维链：模型在工具轮的思考/说明文本（FC 模型常为空，有则下发折叠展示）
+                        if (response.content.isNotBlank()) {
+                            send(AgentEvent.Thinking(response.content.trim()))
+                        }
 
                         // 权限检查 + 执行；finally 保证 tool 结果全部写入 memory（配对完整）
                         val results = mutableMapOf<String, ToolResult>()
@@ -200,7 +206,7 @@ class InventoryAiAgent(
                                         )
                                     }
                                     ToolPermission.CONFIRM -> {
-                                        send(AgentEvent.ToolCallStart(call.name))
+                                        send(AgentEvent.ToolCallStart(call.name, summarizeArguments(call.arguments)))
                                         val approved = requestConfirm({ send(it) }, call)
                                         results[call.id] = if (approved) executor.execute(call)
                                         else ToolResult.failure(
@@ -209,7 +215,7 @@ class InventoryAiAgent(
                                         send(AgentEvent.ToolCallResult(call.name, results[call.id]?.content ?: ""))
                                     }
                                     ToolPermission.AUTO -> {
-                                        send(AgentEvent.ToolCallStart(call.name))
+                                        send(AgentEvent.ToolCallStart(call.name, summarizeArguments(call.arguments)))
                                         val result = executor.execute(call)
                                         results[call.id] = result
                                         send(AgentEvent.ToolCallResult(call.name, result.content))

@@ -124,6 +124,8 @@ class ConversationMemory {
         private const val MAX_TURNS = 10
         private const val MIN_TURNS = 2
         private const val SOFT_CHAR_BUDGET = 24_000
-        private const val MAX_TOOL_RESULT_CHARS = 2_000
+        // 工具结果单条上限。2000 会把查询结果 JSON 拦腰截断，模型看不到完整数据
+        // 会反复重查（实机证据：35 条结果约 9KB 被截成 2019 字符触发连调闸）
+        private const val MAX_TOOL_RESULT_CHARS = 8_000
     }
 }

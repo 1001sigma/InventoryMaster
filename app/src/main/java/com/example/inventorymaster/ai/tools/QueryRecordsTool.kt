@@ -108,12 +108,39 @@ class QueryRecordsTool(
         val note = if (json.get("truncated")?.asBoolean == true) {
             "注意：共 $total 条，仅返回前 $returned 条。"
         } else ""
-        val content = "查询成功，共 $total 条。$note\n请用 Markdown 表格向用户呈现以下数据（日期已是 YYYY-MM-DD 格式）：\n$result"
+
+        // 明细用紧凑 Markdown 表（生 JSON 冗长且易触发记忆截断，实机证据：35条约9KB被截成2K致模型反复重查）
+        val content = if (query.aggregate != null) {
+            "查询成功，共 $total 条。$note\n统计结果：\n$result"
+        } else {
+            buildString {
+                append("查询成功，共 $total 条。$note\n")
+                append("以下为明细（Markdown 表格，可直接向用户呈现；已按效期最近在前排序）：\n")
+                append("| 产品名称 | 批号 | 数量 | 库位 | 有效期 |\n")
+                append("|---|---|---|---|---|\n")
+                json.getAsJsonArray("rows")?.forEach { element ->
+                    val row = element.asJsonObject
+                    append("| ${row.text("产品名称")} | ${row.text("批号")} | ${row.num("数量")} | ${row.text("库位")} | ${row.text("有效期")} |\n")
+                }
+            }
+        }
 
         // 明细查询结果直接携带产品卡片，不再由 Agent 解析结果字符串（替代 ActionResultExtractor）
         val cardAction = buildCardAction(json)
         return ToolResult.success(toolCall, content, data = json, uiAction = cardAction)
     }
+
+    private fun JsonObject.text(key: String): String =
+        get(key)?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() } ?: "—"
+
+    private fun JsonObject.num(key: String): String =
+        get(key)?.takeIf { !it.isJsonNull }?.let { v ->
+            try {
+                v.asDouble.let { d -> if (d == d.toLong().toDouble()) d.toLong().toString() else d.toString() }
+            } catch (_: Exception) {
+                v.asString
+            }
+        } ?: "—"
 
     /** 明细行（带 记录ID）转为产品卡片；聚合结果无 记录ID 字段，不出卡片 */
     private fun buildCardAction(json: JsonObject): UiAction? {

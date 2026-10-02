@@ -62,6 +62,7 @@ fun ChatScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val threads by viewModel.chatThreads.collectAsState()
+    val showThinking by viewModel.showThinking.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val drawerState = rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
@@ -197,7 +198,7 @@ fun ChatScreen(
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp)
                     ) {
                         items(uiState.messages) { message ->
-                            ChatMessageItem(message)
+                            ChatMessageItem(message, showThinking)
                             message.cardAction?.let { cardPayload ->
                                 ProductCardListWidget(
                                     cardPayload = cardPayload,

@@ -4,61 +4,140 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.inventorymaster.ai.provider.AiProviderConfig
+import com.example.inventorymaster.data.model.RecordCardConfig
+import com.example.inventorymaster.data.model.RecordCardSlot
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-// 定义 DataStore 的扩展属性，单例模式
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "app_settings")
 
-// 定义数据模型：用于在 App 中传递设置状态
 data class UserSettings(
-    val seedColor: Long = 0xFF4CAF50, // 默认绿色
-    val useDynamicColor: Boolean = false, // 默认关闭动态取色
-    val isAmoledMode: Boolean = false,    // 默认关闭纯黑模式
-    val themeMode: Int = 0, // 0:跟随系统, 1:浅色, 2:深色
-    // --- 扫码设置 (默认值写在这里) ---
-    val isSimpleMode: Boolean = false,      // 简单分词模式
-    val showOcrMask: Boolean = true,        // OCR 遮罩
-    val enableMultiScan: Boolean = false,    // 多码模式
-    // 👇 新增：DI 校验开关状态
+    val seedColor: Long = 0xFF4CAF50,
+    val useDynamicColor: Boolean = false,
+    val isAmoledMode: Boolean = false,
+    val themeMode: Int = 0,
+    val isSimpleMode: Boolean = false,
+    val showOcrMask: Boolean = true,
+    val enableMultiScan: Boolean = false,
     val enableDiValidation: Boolean = false,
-    // 👇 扫描框尺寸设置
-    val barcodeFrameWidth: Int = 180,       // 扫码框宽度 (dp)
-    val barcodeFrameHeight: Int = 180,      // 扫码框高度 (dp)
-    val ocrFrameWidth: Int = 300,            // OCR 框宽度 (dp)
-    val ocrFrameHeight: Int = 80,          // OCR 框高度 (dp)
-    val serverIp: String = ""              // 服务器 IP 地址
-)
+    val useOpenCV: Boolean = true,
+    // 扫描框尺寸记忆（相对预览容器的归一化比例，0 = 未设置，用默认值）
+    val scanFrameRatioW: Float = 0f,
+    val scanFrameRatioH: Float = 0f,
+    val ocrFrameRatioW: Float = 0f,
+    val ocrFrameRatioH: Float = 0f,
+    val serverIp: String = "",
+    val serverToken: String = "",
+    // 实时录入长连接推送（pythonUDI /ws/entry）；关闭 = 纯 v1 轮询行为
+    val realtimePushEnabled: Boolean = true,
+    // 盘库服务端 WS 门铃（8080 /ws）；关闭 = 手动下拉刷新
+    val inventoryPushEnabled: Boolean = true,
+    // AI 聊天：显示可折叠思维链/工具调用详情
+    val aiShowThinking: Boolean = true,
+    // M1 协作身份：设备唯一标识（首启生成永久保存）与绑定的操作员姓名
+    val deviceUuid: String = "",
+    val operatorName: String = "",
+    val watermarkText: String = "",
+    val watermarkOpacity: Float = 0.3f,
+    val watermarkAngle: Float = 45f,
+    val watermarkFontSize: Float = 32f,
+    val watermarkColor: Long = 0xFFFF0000,
+    // 每页水印数量 1..16（网格自动均布，1=居中单枚）
+    val watermarkDensity: Int = 1,
+    // 电子签名默认摆放参数：签名中心点百分比坐标（percentY 自顶部起算）、宽度占页宽比例、整体不透明度
+    val signatureOffsetX: Float = 0.78f,
+    val signatureOffsetY: Float = 0.85f,
+    val signatureScale: Float = 0.22f,
+    val signatureOpacity: Float = 1f,
+    val nearExpiryThresholdDays: Int = 30,
+    // 记录卡片五个信息位的字段映射（设置 → 盘存设置 → 记录卡片样式）
+    val recordCardConfig: RecordCardConfig = RecordCardConfig(),
+    // AI 设置 - 新版（服务商列表 + 激活 ID）
+    val aiProvidersJson: String = "[]",
+    val activeProviderId: String = "",
+    // AI 设置 - 旧版（兼容迁移）
+    val aiProvider: String = "QWEN",
+    val qwenApiKey: String = "",
+    val qwenModel: String = "qwen-plus",
+    val deepseekApiKey: String = "",
+    val deepseekModel: String = "deepseek-chat"
+) {
+    /** 解析服务商列表 */
+    fun getAiProviders(): List<AiProviderConfig> {
+        return try {
+            val type = object : TypeToken<List<AiProviderConfig>>() {}.type
+            Gson().fromJson(aiProvidersJson, type) ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /** 获取当前激活的服务商 */
+    fun getActiveProvider(): AiProviderConfig? {
+        val providers = getAiProviders()
+        return providers.find { it.id == activeProviderId }
+            ?: providers.firstOrNull()
+    }
+}
 
 class SettingsRepository(private val context: Context) {
 
-    // 定义存储的 Key (键名)
+    private val gson = Gson()
+
     private object Keys {
         val SEED_COLOR = longPreferencesKey("seed_color")
         val USE_DYNAMIC_COLOR = booleanPreferencesKey("use_dynamic_color")
         val IS_AMOLED = booleanPreferencesKey("is_amoled")
         val THEME_MODE = intPreferencesKey("theme_mode")
-        // 【新增】扫码的 Key
         val IS_SIMPLE_MODE = booleanPreferencesKey("is_simple_mode")
         val SHOW_OCR_MASK = booleanPreferencesKey("show_ocr_mask")
         val ENABLE_MULTI_SCAN = booleanPreferencesKey("enable_multi_scan")
-        // 👇 新增：DI 校验的 Key
         val ENABLE_DI_VALIDATION = booleanPreferencesKey("enable_di_validation")
-        // 👇 扫描框尺寸 Key
-        val BARCODE_FRAME_W = intPreferencesKey("barcode_frame_w")
-        val BARCODE_FRAME_H = intPreferencesKey("barcode_frame_h")
-        val OCR_FRAME_W = intPreferencesKey("ocr_frame_w")
-        val OCR_FRAME_H = intPreferencesKey("ocr_frame_h")
-
-        // ============================================================
-        // 🆕 网络同步相关 Key（原 SharedPreferences 迁移至 DataStore）
-        // ============================================================
-        // 服务器 IP 地址
+        val USE_OPENCV = booleanPreferencesKey("use_opencv")
+        val SCAN_FRAME_RATIO_W = floatPreferencesKey("scan_frame_ratio_w")
+        val SCAN_FRAME_RATIO_H = floatPreferencesKey("scan_frame_ratio_h")
+        val OCR_FRAME_RATIO_W = floatPreferencesKey("ocr_frame_ratio_w")
+        val OCR_FRAME_RATIO_H = floatPreferencesKey("ocr_frame_ratio_h")
         val SERVER_IP = stringPreferencesKey("server_ip")
+        val SERVER_TOKEN = stringPreferencesKey("server_token")
+        val REALTIME_PUSH_ENABLED = booleanPreferencesKey("realtime_push_enabled")
+        val INVENTORY_PUSH_ENABLED = booleanPreferencesKey("inventory_push_enabled")
+        // AI 聊天：折叠思维链/工具调用详情卡片
+        val AI_SHOW_THINKING = booleanPreferencesKey("ai_show_thinking")
+        val DEVICE_UUID = stringPreferencesKey("device_uuid")
+        val OPERATOR_NAME = stringPreferencesKey("operator_name")
+        val WATERMARK_TEXT = stringPreferencesKey("watermark_text")
+        val WATERMARK_OPACITY = floatPreferencesKey("watermark_opacity")
+        val WATERMARK_ANGLE = floatPreferencesKey("watermark_angle")
+        val WATERMARK_FONT_SIZE = floatPreferencesKey("watermark_font_size")
+        val WATERMARK_COLOR = longPreferencesKey("watermark_color")
+        val WATERMARK_DENSITY = intPreferencesKey("watermark_density")
+        val SIGNATURE_OFFSET_X = floatPreferencesKey("signature_offset_x")
+        val SIGNATURE_OFFSET_Y = floatPreferencesKey("signature_offset_y")
+        val SIGNATURE_SCALE = floatPreferencesKey("signature_scale")
+        val SIGNATURE_OPACITY = floatPreferencesKey("signature_opacity")
+        val NEAR_EXPIRY_THRESHOLD = intPreferencesKey("near_expiry_threshold_days")
+        // 记录卡片字段配置（五个信息位各自显示的字段 id）
+        val CARD_FIELD_UDI = stringPreferencesKey("card_field_udi")
+        val CARD_FIELD_BATCH = stringPreferencesKey("card_field_batch")
+        val CARD_FIELD_EXPIRY = stringPreferencesKey("card_field_expiry")
+        val CARD_FIELD_LOCATION = stringPreferencesKey("card_field_location")
+        val CARD_FIELD_MANUFACTURER = stringPreferencesKey("card_field_manufacturer")
+        // 旧版 AI Keys（保留用于迁移）
+        val AI_PROVIDER = stringPreferencesKey("ai_provider")
+        val QWEN_API_KEY = stringPreferencesKey("qwen_api_key")
+        val QWEN_MODEL = stringPreferencesKey("qwen_model")
+        val DEEPSEEK_API_KEY = stringPreferencesKey("deepseek_api_key")
+        val DEEPSEEK_MODEL = stringPreferencesKey("deepseek_model")
+        // 新版 AI Keys
+        val AI_PROVIDERS_JSON = stringPreferencesKey("ai_providers_json")
+        val ACTIVE_PROVIDER_ID = stringPreferencesKey("active_provider_id")
     }
 
-    // 1. 读取数据 (暴露为一个 Flow，这样数据一变，UI 就能收到通知)
     val settingsFlow: Flow<UserSettings> = context.dataStore.data
         .map { preferences ->
             UserSettings(
@@ -66,22 +145,167 @@ class SettingsRepository(private val context: Context) {
                 useDynamicColor = preferences[Keys.USE_DYNAMIC_COLOR] ?: false,
                 isAmoledMode = preferences[Keys.IS_AMOLED] ?: false,
                 themeMode = preferences[Keys.THEME_MODE] ?: 0,
-                // 【新增】读取扫码设置
                 isSimpleMode = preferences[Keys.IS_SIMPLE_MODE] ?: false,
                 showOcrMask = preferences[Keys.SHOW_OCR_MASK] ?: true,
                 enableMultiScan = preferences[Keys.ENABLE_MULTI_SCAN] ?: false,
-                // 👇 新增：读取 DI 校验开关状态
                 enableDiValidation = preferences[Keys.ENABLE_DI_VALIDATION] ?: false,
-                // 👇 读取扫描框尺寸
-                barcodeFrameWidth = preferences[Keys.BARCODE_FRAME_W] ?: 260,
-                barcodeFrameHeight = preferences[Keys.BARCODE_FRAME_H] ?: 260,
-                ocrFrameWidth = preferences[Keys.OCR_FRAME_W] ?: 80,
-                ocrFrameHeight = preferences[Keys.OCR_FRAME_H] ?: 300,
-                serverIp = preferences[Keys.SERVER_IP] ?: ""
+                useOpenCV = preferences[Keys.USE_OPENCV] ?: true,
+                scanFrameRatioW = preferences[Keys.SCAN_FRAME_RATIO_W] ?: 0f,
+                scanFrameRatioH = preferences[Keys.SCAN_FRAME_RATIO_H] ?: 0f,
+                ocrFrameRatioW = preferences[Keys.OCR_FRAME_RATIO_W] ?: 0f,
+                ocrFrameRatioH = preferences[Keys.OCR_FRAME_RATIO_H] ?: 0f,
+                serverIp = preferences[Keys.SERVER_IP] ?: "",
+                serverToken = preferences[Keys.SERVER_TOKEN] ?: "",
+                realtimePushEnabled = preferences[Keys.REALTIME_PUSH_ENABLED] ?: true,
+                inventoryPushEnabled = preferences[Keys.INVENTORY_PUSH_ENABLED] ?: true,
+                aiShowThinking = preferences[Keys.AI_SHOW_THINKING] ?: true,
+                deviceUuid = preferences[Keys.DEVICE_UUID] ?: "",
+                operatorName = preferences[Keys.OPERATOR_NAME] ?: "",
+                watermarkText = preferences[Keys.WATERMARK_TEXT] ?: "",
+                watermarkOpacity = preferences[Keys.WATERMARK_OPACITY] ?: 0.3f,
+                watermarkAngle = preferences[Keys.WATERMARK_ANGLE] ?: 45f,
+                watermarkFontSize = preferences[Keys.WATERMARK_FONT_SIZE] ?: 32f,
+                watermarkColor = preferences[Keys.WATERMARK_COLOR] ?: 0xFFFF0000,
+                watermarkDensity = preferences[Keys.WATERMARK_DENSITY] ?: 1,
+                signatureOffsetX = preferences[Keys.SIGNATURE_OFFSET_X] ?: 0.78f,
+                signatureOffsetY = preferences[Keys.SIGNATURE_OFFSET_Y] ?: 0.85f,
+                signatureScale = preferences[Keys.SIGNATURE_SCALE] ?: 0.22f,
+                signatureOpacity = preferences[Keys.SIGNATURE_OPACITY] ?: 1f,
+                nearExpiryThresholdDays = preferences[Keys.NEAR_EXPIRY_THRESHOLD] ?: 30,
+                recordCardConfig = RecordCardConfig(
+                    udiField = preferences[Keys.CARD_FIELD_UDI] ?: RecordCardSlot.UDI.defaultField.id,
+                    batchField = preferences[Keys.CARD_FIELD_BATCH] ?: RecordCardSlot.BATCH.defaultField.id,
+                    expiryField = preferences[Keys.CARD_FIELD_EXPIRY] ?: RecordCardSlot.EXPIRY.defaultField.id,
+                    locationField = preferences[Keys.CARD_FIELD_LOCATION] ?: RecordCardSlot.LOCATION.defaultField.id,
+                    manufacturerField = preferences[Keys.CARD_FIELD_MANUFACTURER] ?: RecordCardSlot.MANUFACTURER.defaultField.id
+                ),
+                aiProvidersJson = preferences[Keys.AI_PROVIDERS_JSON] ?: "[]",
+                activeProviderId = preferences[Keys.ACTIVE_PROVIDER_ID] ?: "",
+                aiProvider = preferences[Keys.AI_PROVIDER] ?: "QWEN",
+                qwenApiKey = preferences[Keys.QWEN_API_KEY] ?: "",
+                qwenModel = preferences[Keys.QWEN_MODEL] ?: "qwen-plus",
+                deepseekApiKey = preferences[Keys.DEEPSEEK_API_KEY] ?: "",
+                deepseekModel = preferences[Keys.DEEPSEEK_MODEL] ?: "deepseek-chat"
             )
         }
 
-    // 2. 写入数据的方法
+    /** 首次启动时将旧版 AI 设置迁移到新版 */
+    suspend fun migrateOldProviderSettings() {
+        context.dataStore.data.first().let { preferences ->
+            val providersJson = preferences[Keys.AI_PROVIDERS_JSON]
+            if (!providersJson.isNullOrBlank() && providersJson != "[]") return
+
+            val oldProvider = preferences[Keys.AI_PROVIDER] ?: return
+            val providers = mutableListOf<AiProviderConfig>()
+
+            when (oldProvider) {
+                "QWEN" -> {
+                    val apiKey = preferences[Keys.QWEN_API_KEY] ?: ""
+                    val model = preferences[Keys.QWEN_MODEL] ?: "qwen-plus"
+                    if (apiKey.isNotBlank()) {
+                        val config = AiProviderConfig(
+                            name = "通义千问",
+                            baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                            model = model,
+                            apiKey = apiKey,
+                            modelsEndpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+                        )
+                        providers.add(config)
+                        context.dataStore.edit {
+                            it[Keys.ACTIVE_PROVIDER_ID] = config.id
+                        }
+                    }
+                }
+                "DEEPSEEK" -> {
+                    val apiKey = preferences[Keys.DEEPSEEK_API_KEY] ?: ""
+                    val model = preferences[Keys.DEEPSEEK_MODEL] ?: "deepseek-chat"
+                    if (apiKey.isNotBlank()) {
+                        val config = AiProviderConfig(
+                            name = "DeepSeek",
+                            baseUrl = "https://api.deepseek.com/v1",
+                            model = model,
+                            apiKey = apiKey,
+                            modelsEndpoint = "https://api.deepseek.com/v1/models"
+                        )
+                        providers.add(config)
+                        context.dataStore.edit {
+                            it[Keys.ACTIVE_PROVIDER_ID] = config.id
+                        }
+                    }
+                }
+            }
+
+            if (providers.isNotEmpty()) {
+                context.dataStore.edit {
+                    it[Keys.AI_PROVIDERS_JSON] = gson.toJson(providers)
+                }
+            }
+        }
+    }
+
+    // ============================================================
+    // 服务商管理方法
+    // ============================================================
+
+    suspend fun getAiProviders(): List<AiProviderConfig> {
+        return context.dataStore.data.first().let { preferences ->
+            val json = preferences[Keys.AI_PROVIDERS_JSON] ?: "[]"
+            try {
+                val type = object : TypeToken<List<AiProviderConfig>>() {}.type
+                gson.fromJson(json, type) ?: emptyList()
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+    }
+
+    suspend fun saveAiProviders(providers: List<AiProviderConfig>) {
+        context.dataStore.edit {
+            it[Keys.AI_PROVIDERS_JSON] = gson.toJson(providers)
+        }
+    }
+
+    suspend fun setActiveProvider(id: String) {
+        context.dataStore.edit {
+            it[Keys.ACTIVE_PROVIDER_ID] = id
+        }
+    }
+
+    suspend fun addAiProvider(provider: AiProviderConfig) {
+        val providers = getAiProviders().toMutableList()
+        providers.add(provider)
+        saveAiProviders(providers)
+    }
+
+    suspend fun updateAiProvider(provider: AiProviderConfig) {
+        val providers = getAiProviders().toMutableList()
+        val index = providers.indexOfFirst { it.id == provider.id }
+        if (index >= 0) {
+            providers[index] = provider
+            saveAiProviders(providers)
+        }
+    }
+
+    suspend fun deleteAiProvider(id: String) {
+        val providers = getAiProviders().toMutableList()
+        providers.removeAll { it.id == id }
+        saveAiProviders(providers)
+        val activeId = context.dataStore.data.first()[Keys.ACTIVE_PROVIDER_ID]
+        if (activeId == id) {
+            context.dataStore.edit {
+                it[Keys.ACTIVE_PROVIDER_ID] = providers.firstOrNull()?.id ?: ""
+            }
+        }
+    }
+
+    suspend fun getActiveProviderId(): String {
+        return context.dataStore.data.first()[Keys.ACTIVE_PROVIDER_ID] ?: ""
+    }
+
+    // ============================================================
+    // 通用设置写入方法
+    // ============================================================
+
     suspend fun updateSeedColor(color: Long) {
         context.dataStore.edit { it[Keys.SEED_COLOR] = color }
     }
@@ -94,12 +318,10 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.IS_AMOLED] = isAmoled }
     }
 
-    // themeMode: 0=System, 1=Light, 2=Dark
     suspend fun updateThemeMode(mode: Int) {
         context.dataStore.edit { it[Keys.THEME_MODE] = mode }
     }
 
-    // --- 【新增】扫码设置的写入方法 ---
     suspend fun updateSimpleMode(isSimple: Boolean) {
         context.dataStore.edit { it[Keys.IS_SIMPLE_MODE] = isSimple }
     }
@@ -116,70 +338,135 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.ENABLE_DI_VALIDATION] = enable }
     }
 
-    // --- 扫描框尺寸写入方法 ---
-    suspend fun updateBarcodeFrameWidth(w: Int) {
-        context.dataStore.edit { it[Keys.BARCODE_FRAME_W] = w }
+    suspend fun updateUseOpenCV(use: Boolean) {
+        context.dataStore.edit { it[Keys.USE_OPENCV] = use }
     }
-    suspend fun updateBarcodeFrameHeight(h: Int) {
-        context.dataStore.edit { it[Keys.BARCODE_FRAME_H] = h }
+
+    suspend fun updateScanFrameRatio(w: Float, h: Float) {
+        context.dataStore.edit {
+            it[Keys.SCAN_FRAME_RATIO_W] = w
+            it[Keys.SCAN_FRAME_RATIO_H] = h
+        }
     }
-    suspend fun updateOcrFrameWidth(w: Int) {
-        context.dataStore.edit { it[Keys.OCR_FRAME_W] = w }
-    }
-    suspend fun updateOcrFrameHeight(h: Int) {
-        context.dataStore.edit { it[Keys.OCR_FRAME_H] = h }
+
+    suspend fun updateOcrFrameRatio(w: Float, h: Float) {
+        context.dataStore.edit {
+            it[Keys.OCR_FRAME_RATIO_W] = w
+            it[Keys.OCR_FRAME_RATIO_H] = h
+        }
     }
 
     suspend fun updateServerIp(ip: String) {
         context.dataStore.edit { it[Keys.SERVER_IP] = ip }
     }
 
-    // ============================================================
-    // 🆕 网络同步相关方法（原 SharedPreferences 迁移至 DataStore）
-    // ============================================================
-
-    /**
-     * 保存服务器 IP 地址到 DataStore
-     * @param ip 服务器 IP 地址
-     */
     suspend fun saveServerIp(ip: String) {
-        context.dataStore.edit { preferences ->
-            preferences[Keys.SERVER_IP] = ip
-        }
+        context.dataStore.edit { it[Keys.SERVER_IP] = ip }
     }
 
-    /**
-     * 从 DataStore 读取服务器 IP 地址
-     * @return 保存的 IP 地址，如果没有则返回空字符串
-     */
     suspend fun getServerIp(): String {
-        return context.dataStore.data.map { preferences ->
-            preferences[Keys.SERVER_IP] ?: ""
-        }.first()
+        return context.dataStore.data.map { it[Keys.SERVER_IP] ?: "" }.first()
     }
 
-    /**
-     * 保存指定任务的同步时间戳到 DataStore
-     * 用于增量同步时记录上次拉取的时间点，避免重复拉取
-     * @param sessionId 任务 ID
-     * @param timestamp 同步时间戳（毫秒）
-     */
-    suspend fun saveLastSyncTime(sessionId: Long, timestamp: Long) {
-        val key = stringPreferencesKey("last_sync_time_$sessionId")
-        context.dataStore.edit { preferences ->
-            preferences[key] = timestamp.toString()
+    suspend fun saveServerToken(token: String) {
+        context.dataStore.edit { it[Keys.SERVER_TOKEN] = token }
+    }
+
+    suspend fun updateRealtimePushEnabled(enable: Boolean) {
+        context.dataStore.edit { it[Keys.REALTIME_PUSH_ENABLED] = enable }
+    }
+
+    suspend fun updateInventoryPushEnabled(enable: Boolean) {
+        context.dataStore.edit { it[Keys.INVENTORY_PUSH_ENABLED] = enable }
+    }
+
+    suspend fun updateAiShowThinking(enable: Boolean) {
+        context.dataStore.edit { it[Keys.AI_SHOW_THINKING] = enable }
+    }
+
+    /** M1：首次启动生成设备唯一标识，永久保存（doc §2 设备身份）*/
+    suspend fun ensureDeviceUuid(): String {
+        val existing = context.dataStore.data.map { it[Keys.DEVICE_UUID] ?: "" }.first()
+        if (existing.isNotBlank()) return existing
+        val uuid = java.util.UUID.randomUUID().toString()
+        context.dataStore.edit { it[Keys.DEVICE_UUID] = uuid }
+        return uuid
+    }
+
+    suspend fun getDeviceUuid(): String {
+        return context.dataStore.data.map { it[Keys.DEVICE_UUID] ?: "" }.first()
+    }
+
+    suspend fun saveOperatorName(name: String) {
+        context.dataStore.edit { it[Keys.OPERATOR_NAME] = name }
+    }
+
+    suspend fun getOperatorName(): String {
+        return context.dataStore.data.map { it[Keys.OPERATOR_NAME] ?: "" }.first()
+    }
+
+    suspend fun getServerToken(): String {
+        return context.dataStore.data.map { it[Keys.SERVER_TOKEN] ?: "" }.first()
+    }
+
+    suspend fun updateWatermarkText(text: String) {
+        context.dataStore.edit { it[Keys.WATERMARK_TEXT] = text }
+    }
+    suspend fun updateWatermarkOpacity(opacity: Float) {
+        context.dataStore.edit { it[Keys.WATERMARK_OPACITY] = opacity }
+    }
+    suspend fun updateWatermarkAngle(angle: Float) {
+        context.dataStore.edit { it[Keys.WATERMARK_ANGLE] = angle }
+    }
+    suspend fun updateWatermarkFontSize(size: Float) {
+        context.dataStore.edit { it[Keys.WATERMARK_FONT_SIZE] = size }
+    }
+    suspend fun updateWatermarkColor(color: Long) {
+        context.dataStore.edit { it[Keys.WATERMARK_COLOR] = color }
+    }
+    suspend fun updateWatermarkDensity(density: Int) {
+        context.dataStore.edit { it[Keys.WATERMARK_DENSITY] = density.coerceIn(1, 16) }
+    }
+
+    suspend fun updateSignatureOffsetX(x: Float) {
+        context.dataStore.edit { it[Keys.SIGNATURE_OFFSET_X] = x.coerceIn(0f, 1f) }
+    }
+    suspend fun updateSignatureOffsetY(y: Float) {
+        context.dataStore.edit { it[Keys.SIGNATURE_OFFSET_Y] = y.coerceIn(0f, 1f) }
+    }
+    suspend fun updateSignatureScale(scale: Float) {
+        context.dataStore.edit { it[Keys.SIGNATURE_SCALE] = scale.coerceIn(0.05f, 0.9f) }
+    }
+    suspend fun updateSignatureOpacity(opacity: Float) {
+        context.dataStore.edit { it[Keys.SIGNATURE_OPACITY] = opacity.coerceIn(0.1f, 1f) }
+    }
+
+    suspend fun updateNearExpiryThreshold(days: Int) {
+        context.dataStore.edit { it[Keys.NEAR_EXPIRY_THRESHOLD] = days }
+    }
+
+    suspend fun updateRecordCardConfig(config: RecordCardConfig) {
+        context.dataStore.edit {
+            it[Keys.CARD_FIELD_UDI] = config.udiField
+            it[Keys.CARD_FIELD_BATCH] = config.batchField
+            it[Keys.CARD_FIELD_EXPIRY] = config.expiryField
+            it[Keys.CARD_FIELD_LOCATION] = config.locationField
+            it[Keys.CARD_FIELD_MANUFACTURER] = config.manufacturerField
         }
     }
 
-    /**
-     * 读取指定任务的同步时间戳
-     * @param sessionId 任务 ID
-     * @return 上次同步时间戳，如果没有则返回 0L
-     */
-    suspend fun getLastSyncTime(sessionId: Long): Long {
-        val key = stringPreferencesKey("last_sync_time_$sessionId")
-        return context.dataStore.data.map { preferences ->
-            preferences[key]?.toLongOrNull() ?: 0L
-        }.first()
+    // ---- M5：归档上报重试队列（离线缓存，App 启动/同步成功后补报）----
+    private val PENDING_REPORTS = stringSetPreferencesKey("pending_task_reports")
+
+    suspend fun addPendingReport(sessionUuid: String) {
+        context.dataStore.edit { it[PENDING_REPORTS] = (it[PENDING_REPORTS] ?: emptySet()) + sessionUuid }
+    }
+
+    suspend fun getPendingReports(): Set<String> {
+        return context.dataStore.data.map { it[PENDING_REPORTS] ?: emptySet() }.first()
+    }
+
+    suspend fun removePendingReport(sessionUuid: String) {
+        context.dataStore.edit { it[PENDING_REPORTS] = (it[PENDING_REPORTS] ?: emptySet()) - sessionUuid }
     }
 }
