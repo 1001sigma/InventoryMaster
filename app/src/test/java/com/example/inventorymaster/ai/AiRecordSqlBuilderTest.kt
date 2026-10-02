@@ -18,24 +18,35 @@ class AiRecordSqlBuilderTest {
     private val zone = ZoneId.of("Asia/Shanghai")
 
     @Test
-    fun `ISO 日期正确换算为毫秒时间戳绑定参数`() {
+    fun `日期条件覆盖三种存储形态且各自限定数值域`() {
         val query = AiRecordQuery(expiryBefore = LocalDate.of(2026, 12, 31))
         val built = AiRecordSqlBuilder.build(query, zone)
 
-        assertTrue(built.sql.contains("r.expiryDate < ?"))
-        val expected = LocalDate.of(2026, 12, 31).atStartOfDay(zone).toInstant().toEpochMilli()
-        assertEquals(expected.toLong(), built.bindArgs[0])
+        // 三形态数值域（与 utils/DateUtils.toLocalDate 判定同源）
+        assertTrue(built.sql.contains("r.expiryDate >= 946684800000 AND r.expiryDate <= 4102444800000"))
+        assertTrue(built.sql.contains("r.expiryDate >= 20000101 AND r.expiryDate <= 29991231"))
+        assertTrue(built.sql.contains("r.expiryDate >= 0 AND r.expiryDate <= 991231"))
+        // 每形态各自的"不含当天"上界：毫秒 / 8位 / 6位
+        val ms = LocalDate.of(2026, 12, 31).atStartOfDay(zone).toInstant().toEpochMilli()
+        assertEquals(ms, built.bindArgs[0])
+        assertEquals(20261231L, built.bindArgs[1])
+        assertEquals(261231L, built.bindArgs[2])
     }
 
     @Test
-    fun `expiry_within_days 生成上下界且不含已过期`() {
-        val query = AiRecordQuery(expiryWithinDays = 30)
-        val built = AiRecordSqlBuilder.build(query, zone)
+    fun `8位日期数据可被近效期窗口命中`() {
+        // 库中实际形态：expiryDate=20261128（Excel 导入 8 位整数）应落入未来 90 天窗口
+        val built = AiRecordSqlBuilder.build(AiRecordQuery(expiryWithinDays = 90), zone)
 
-        assertTrue(built.sql.contains("r.expiryDate >= ? AND r.expiryDate < ?"))
         val today = LocalDate.now(zone)
-        assertEquals(today.atStartOfDay(zone).toInstant().toEpochMilli(), built.bindArgs[0])
-        assertEquals(today.plusDays(31).atStartOfDay(zone).toInstant().toEpochMilli(), built.bindArgs[1])
+        fun ymd8(d: LocalDate) = d.year * 10_000L + d.monthValue * 100L + d.dayOfMonth
+        // 参数顺序：毫秒(下,上) → 8位(下,上) → 6位(下,上)
+        assertEquals(ymd8(today), built.bindArgs[2])
+        assertEquals(ymd8(today.plusDays(91)), built.bindArgs[3])
+        assertEquals(
+            (today.year % 100) * 10_000L + today.monthValue * 100L + today.dayOfMonth,
+            built.bindArgs[4]
+        )
     }
 
     @Test
@@ -81,7 +92,7 @@ class AiRecordSqlBuilderTest {
     @Test
     fun `明细查询默认按有效期升序且空值靠后`() {
         val built = AiRecordSqlBuilder.build(AiRecordQuery(), zone)
-        assertTrue(built.sql.contains("ORDER BY (r.expiryDate IS NULL) ASC, r.expiryDate ASC"))
+        assertTrue(built.sql.contains("ORDER BY (r.expiryDate IS NULL) ASC, CASE WHEN r.expiryDate IS NULL"))
     }
 
     @Test
