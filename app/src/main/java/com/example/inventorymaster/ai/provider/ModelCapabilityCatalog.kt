@@ -31,10 +31,15 @@ object ModelCapabilityCatalog {
         Rule(Regex("gemma", RegexOption.IGNORE_CASE), ModelCapabilities(false, false), "本地 Gemma（占位引擎无推理）")
     )
 
-    /** 按模型名解析能力默认值；未匹配 → FC 关、流式开 */
+    /**
+     * 按模型名解析能力默认值。未匹配 → 沿用目录改造前的旧行为（FC 开），保持既有云端
+     * 配置兼容；已知弱模型家族才降级，用户可在设置页手动关闭任意模型。
+     * （不要改回"未知即 FC 关"：实机教训——未知模型集体跌入 JSON 协议，而该路径曾踩
+     * ICU 正则坑。）
+     */
     fun forModel(model: String): ModelCapabilities {
         rules.firstOrNull { it.pattern.containsMatchIn(model) }?.let { return it.caps }
-        return ModelCapabilities(functionCalling = false, streaming = true)
+        return ModelCapabilities(functionCalling = true, streaming = true)
     }
 
     /** 最终能力 = 用户显式开关 ∩ 目录默认值；本地占位引擎两者皆关 */

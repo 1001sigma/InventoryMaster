@@ -26,9 +26,10 @@ class ModelCapabilityCatalogTest {
     }
 
     @Test
-    fun `未知模型按保守默认_FC关_流式开`() {
+    fun `未知模型沿用旧行为_FC开_流式开`() {
+        // 兼容既有云端配置：未识别模型不做降级（实机教训：未知即 FC 关会让全体模型跌入 JSON 协议）
         val caps = ModelCapabilityCatalog.forModel("mystery-model-v9")
-        assertFalse(caps.functionCalling)
+        assertTrue(caps.functionCalling)
         assertTrue(caps.streaming)
     }
 
