@@ -8,7 +8,9 @@ class GetProductDetailTool(
     private val repository: InventoryRepository
 ) : AiTool {
     override val name = "get_product_detail"
-    override val description = "获取某个产品的完整详细信息"
+    override val description =
+        "产品库档案查询（产品字典：DI/注册证号/规格/厂家/单位等静态信息）。" +
+            "注意：产品库不含库存数量、批号、有效期——涉及库存、效期、批号请改用 query_records。"
     override val parameters: JsonObject = JsonObject().apply {
         addProperty("type", "object")
         add("properties", JsonObject().apply {

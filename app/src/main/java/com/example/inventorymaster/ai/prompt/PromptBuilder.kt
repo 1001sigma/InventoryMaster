@@ -30,6 +30,7 @@ object PromptBuilder {
                 appendLine("- 当前没有进行中的盘存任务")
             }
             appendLine("- 涉及具体数据（库存数量、效期、统计等）时必须通过工具查询，严禁编造数据。")
+            appendLine("- 产品库与库存是两个概念：产品库=产品档案（无数量/效期），库存=盘点记录（有数量/批号/有效期/库位）。查库存与效期用 query_records。")
             appendLine()
             appendLine("# 回答规范")
             appendLine("1. 简体中文 + 简洁 Markdown：关键数据加粗，多项数据用表格或列表。")

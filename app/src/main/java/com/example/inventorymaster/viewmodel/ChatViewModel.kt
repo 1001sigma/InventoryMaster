@@ -49,6 +49,13 @@ data class PendingConfirm(
     val argumentsSummary: String
 )
 
+/** 历史会话栏条目 */
+data class ChatThreadInfo(
+    val threadId: String,
+    val title: String,
+    val lastTime: Long
+)
+
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val isProcessing: Boolean = false,
@@ -56,7 +63,8 @@ data class ChatUiState(
     val activeProvider: AiProviderConfig? = null,
     val isConfigured: Boolean = false,
     val pendingActions: List<UiAction> = emptyList(),
-    val pendingConfirm: PendingConfirm? = null
+    val pendingConfirm: PendingConfirm? = null,
+    val currentThreadId: String = "global"
 )
 
 class ChatViewModel(
@@ -83,6 +91,9 @@ class ChatViewModel(
 
     private val persistenceMutex = Mutex()
 
+    private val _chatThreads = MutableStateFlow<List<ChatThreadInfo>>(emptyList())
+    val chatThreads: StateFlow<List<ChatThreadInfo>> = _chatThreads.asStateFlow()
+
     init {
         viewModelScope.launch {
             settingsRepository.settingsFlow
@@ -98,7 +109,10 @@ class ChatViewModel(
                 }
         }
         // 启动即恢复全局线程（未绑定任务时的对话）
-        viewModelScope.launch { loadThread(currentThreadId) }
+        viewModelScope.launch {
+            loadThread(currentThreadId)
+            refreshThreads()
+        }
     }
 
     /** 仅在 provider 实际变化时重建（AiProviderConfig 是 data class，含 Key 编辑在内的一切变更都会触发重建） */
@@ -120,6 +134,7 @@ class ChatViewModel(
 
         val oldThreadId = currentThreadId
         currentThreadId = newThreadId
+        _uiState.update { it.copy(currentThreadId = newThreadId) }
         currentJob?.cancel()
         viewModelScope.launch {
             currentJob?.join()
@@ -129,6 +144,30 @@ class ChatViewModel(
             }
             if (currentThreadId != newThreadId) return@launch
             loadThread(newThreadId)
+            refreshThreads()
+        }
+    }
+
+    /** 从历史会话栏切换线程：数字线程ID 解析回任务并绑定上下文 */
+    fun openThread(threadId: String) {
+        viewModelScope.launch {
+            val session = threadId.toLongOrNull()?.let { repository.getSessionById(it) }
+            setCurrentSession(session)
+        }
+    }
+
+    private suspend fun threadTitle(threadId: String): String =
+        if (threadId == THREAD_GLOBAL) "全局对话"
+        else threadId.toLongOrNull()?.let { repository.getSessionById(it)?.name } ?: "任务 $threadId"
+
+    private fun refreshThreads() {
+        viewModelScope.launch {
+            val fromDb = chatMessageDao.getThreadSummaries().map { summary ->
+                ChatThreadInfo(summary.threadId, threadTitle(summary.threadId), summary.lastTime)
+            }
+            // 当前线程即使还没有任何落库消息也显示在最前
+            val current = ChatThreadInfo(currentThreadId, threadTitle(currentThreadId), Long.MAX_VALUE)
+            _chatThreads.value = (listOf(current) + fromDb.filter { it.threadId != currentThreadId })
         }
     }
 
@@ -307,6 +346,7 @@ class ChatViewModel(
                 withContext(NonCancellable) {
                     persistThread(threadIdAtSend)
                     memoryDirty = false
+                    refreshThreads()
                 }
             }
         }
@@ -324,6 +364,7 @@ class ChatViewModel(
             // 等被取消的在飞任务收尾（其 finally 会先持久化），再删除该线程历史
             job?.join()
             chatMessageDao.deleteThread(threadId)
+            refreshThreads()
         }
     }
 

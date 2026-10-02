@@ -21,10 +21,11 @@ class QueryRecordsTool(
     override val name = "query_records"
 
     override val description = """
-        库存记录查询引擎。日期参数一律用 YYYY-MM-DD 格式，无需换算时间戳。
-        支持按产品关键词（名称/规格/厂家/物料编码/DI 模糊匹配）、批号、库位、
-        有效期区间、数量区间过滤；支持按产品名称/库位/厂家/分类分组统计。
-        可查询的表：stock_records（盘点记录，含产品信息 JOIN）。
+        库存查询引擎（唯一能查实物库存的工具）。查库存数量、批号、有效期、近效期、过期、
+        库位、盘点记录，一律用本工具；查近效期优先用 expiry_within_days。
+        注意：产品库（产品档案）里没有数量、批号、有效期——这些只在库存（盘点记录）里。
+        可按 product_keyword（产品名称/规格/厂家/物料编码/DI 模糊匹配）过滤，
+        不传 session_id 时查询全部任务。
     """.trimIndent()
 
     override val parameters: JsonObject = JsonParser.parseString("""
@@ -100,7 +101,7 @@ class QueryRecordsTool(
 
         val total = json.get("total")?.asLong ?: 0L
         if (total == 0L) {
-            return ToolResult.success(toolCall, "查询成功，但未找到任何匹配记录。请如实告知用户未查到相关数据。")
+            return ToolResult.success(toolCall, zeroResultDiagnosis(query, repository))
         }
 
         val returned = json.get("returned")?.asLong ?: 0L
@@ -139,6 +140,39 @@ class QueryRecordsTool(
         return if (cardProducts.isNotEmpty()) {
             UiAction.ShowProductCardList(title = "查询结果中的重点物资：", products = cardProducts)
         } else null
+    }
+
+    /** 0 结果时的自诊断：放宽日期条件、放开任务限定各数一次，把线索直接喂给模型（Agent Recovery） */
+    private suspend fun zeroResultDiagnosis(query: AiRecordQuery, repository: InventoryRepository): String {
+        val hints = mutableListOf("按当前条件未找到匹配记录。")
+
+        val hasExpiryFilter = query.expiryBefore != null || query.expiryAfter != null || query.expiryWithinDays != null
+        if (hasExpiryFilter) {
+            val relaxedTotal = countOf(repository.queryRecordsForAi(query.copy(expiryBefore = null, expiryAfter = null, expiryWithinDays = null)))
+            if (relaxedTotal > 0) {
+                hints.add(
+                    "忽略有效期条件后，同条件下共 $relaxedTotal 条——这些记录的有效期缺失或不在指定范围内。" +
+                        "可去掉日期条件、用 product_keyword 列出后向用户人工核对。"
+                )
+            }
+        }
+        if (query.sessionId != null) {
+            val globalTotal = countOf(
+                repository.queryRecordsForAi(
+                    query.copy(expiryBefore = null, expiryAfter = null, expiryWithinDays = null, sessionId = null)
+                )
+            )
+            if (globalTotal > 0) {
+                hints.add("不限任务时同产品条件下共 $globalTotal 条——记录可能在其他任务中，可先用 list_sessions 查任务ID。")
+            }
+        }
+        return "查询成功，但没有符合条件的记录。\n" + hints.joinToString("\n")
+    }
+
+    private fun countOf(jsonStr: String): Long = try {
+        JsonParser.parseString(jsonStr).asJsonObject.get("total")?.asLong ?: 0L
+    } catch (_: Exception) {
+        0L
     }
 
     private fun parseQuery(args: JsonObject): AiRecordQuery? {
