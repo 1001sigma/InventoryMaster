@@ -4,297 +4,74 @@ import android.util.Log
 import com.example.inventorymaster.ai.agent.AgentEvent
 import com.example.inventorymaster.ai.agent.AiAgent
 import com.example.inventorymaster.ai.agent.UiAction
-import com.example.inventorymaster.ai.agent.ToolCallAccumulator
-import com.example.inventorymaster.ai.agent.strategy.FunctionCallingStrategy
-import com.example.inventorymaster.ai.agent.strategy.JsonToolCallStrategy
-import com.example.inventorymaster.ai.agent.strategy.ToolCallOutcome
-import com.example.inventorymaster.ai.agent.strategy.ToolCallStrategy
 import com.example.inventorymaster.ai.memory.ConversationMemory
 import com.example.inventorymaster.ai.prompt.PromptBuilder
-import com.example.inventorymaster.ai.provider.AiErrorKind
-import com.example.inventorymaster.ai.provider.AiResponse
 import com.example.inventorymaster.ai.provider.AiService
-import com.example.inventorymaster.ai.provider.AiServiceException
-import com.example.inventorymaster.ai.provider.AiToolCall
-import com.example.inventorymaster.ai.provider.AiToolDefinition
-import com.example.inventorymaster.ai.provider.StreamChunk
-import com.example.inventorymaster.ai.tools.ToolErrorKind
-import com.example.inventorymaster.ai.tools.ToolExecutor
-import com.example.inventorymaster.ai.tools.ToolPermission
-import com.example.inventorymaster.ai.tools.ToolPermissionManager
+import com.example.inventorymaster.ai.runtime.AiEvent
+import com.example.inventorymaster.ai.runtime.AiRuntime
 import com.example.inventorymaster.ai.tools.ToolRegistry
-import com.example.inventorymaster.ai.tools.ToolResult
 import com.example.inventorymaster.data.entity.InventorySession
 import com.google.gson.JsonObject
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
-import kotlinx.coroutines.withTimeout
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 库存 AI 助手 Agent（v3，docs/AI_V3_REDESIGN.md §4.3）。
+ * 库存 AI 助手 Agent（v3.5，AI_Runtime Phase 2/3 后的业务适配层）。
  *
- * 相比 v2 的关键变化：
- * - 能力路由：按 [AiService.capabilities] 选择 Function Calling / JSON 协议，
- *   删除"扫描正文猜工具"的兜底劫持（误触发源头）
- * - 每轮 LLM 调用有超时、每个工具有超时、确认操作有超时；全程可取消
- * - 工具结果统一在轮末写入 memory（finally 兜底补齐），永不产生不完整的 tool_calls 配对
- * - 取消/异常时关闭当前轮次并补 assistant 说明，memory 导出序列永远合法
+ * 通用工具循环已抽至 [AiRuntime]；本类只负责库存业务：
+ * - 系统提示词注入（当前盘存任务上下文，PromptBuilder）
+ * - AiEvent → AgentEvent（UI 事件契约）映射
+ * - 产品卡片持有（ShowProductCardList 随最终回复下发，其余 uiAction 即时执行）
  */
 class InventoryAiAgent(
-    private val aiService: AiService,
-    private val registry: ToolRegistry,
-    private val memory: ConversationMemory = ConversationMemory()
+    aiService: AiService,
+    registry: ToolRegistry,
+    memory: ConversationMemory = ConversationMemory()
 ) : AiAgent {
 
-    private val executor = ToolExecutor(registry)
+    private val runtime = AiRuntime(aiService, registry, memory)
+
     private var currentSession: InventorySession? = null
-    private val pendingConfirms = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
 
     fun setCurrentSession(session: InventorySession?) {
         currentSession = session
     }
 
-    /** UI 对 ConfirmRequired 的答复 */
+    /** UI 对 ConfirmRequired 的答复（透传运行时） */
     fun respondConfirm(requestId: String, approved: Boolean) {
-        pendingConfirms.remove(requestId)?.complete(approved)
-    }
-
-    /**
-     * 单轮模型调用。支持流式的服务商走 streamChat：文本增量实时下发（ResponseChunk），
-     * 工具调用分片由 [ToolCallAccumulator] 按累积成完整调用（docs/AI_V3_REDESIGN.md §4.8）。
-     * JSON 文本协议模型的正文可能是工具信封，不外泄给 UI（仅 FC 模型实时外显）。
-     * 流式空结果（既无文本也无分片）降级为一次非流式调用。
-     */
-    private suspend fun callModelRound(
-        send: suspend (AgentEvent) -> Unit,
-        systemPrompt: String,
-        toolDefs: List<AiToolDefinition>,
-        useTools: Boolean
-    ): AiResponse {
-        val tools = if (useTools) toolDefs else null
-        val messages = memory.messagesForRequest()
-        if (!aiService.capabilities.streaming) {
-            return withTimeout(LLM_TIMEOUT_MS) { aiService.chat(messages, systemPrompt, tools) }
-        }
-        val content = StringBuilder()
-        val accumulator = ToolCallAccumulator()
-        withTimeout(LLM_TIMEOUT_MS) {
-            aiService.streamChat(messages, systemPrompt, tools).collect { chunk ->
-                when (chunk) {
-                    is StreamChunk.Text -> {
-                        content.append(chunk.text)
-                        if (aiService.capabilities.functionCalling) send(AgentEvent.ResponseChunk(chunk.text))
-                    }
-                    is StreamChunk.ToolCallDelta -> accumulator.add(chunk)
-                    is StreamChunk.Completed -> Unit
-                    is StreamChunk.Error -> throw AiServiceException(AiErrorKind.UNREACHABLE, chunk.message)
-                }
-            }
-        }
-        if (content.isBlank() && accumulator.isEmpty()) {
-            return withTimeout(LLM_TIMEOUT_MS) { aiService.chat(messages, systemPrompt, tools) }
-        }
-        val toolCalls = accumulator.toToolCalls()
-        return AiResponse(content = content.toString(), toolCalls = toolCalls.takeIf { it.isNotEmpty() })
+        runtime.respondConfirm(requestId, approved)
     }
 
     override suspend fun chat(message: String): Flow<AgentEvent> = channelFlow {
-        memory.openUserTurn(message)
-        try {
-            val strategy: ToolCallStrategy =
-                if (aiService.capabilities.functionCalling) FunctionCallingStrategy()
-                else JsonToolCallStrategy()
-
-            val basePrompt = PromptBuilder.build(currentSession)
-            val toolDefs = registry.getToolDefinitions()
-            val systemPrompt = strategy.buildSystemPrompt(basePrompt, toolDefs)
-            val useTools = toolDefs.isNotEmpty()
-
-            var lastSignature = ""
-            var lastSingleToolName = ""
-            var sameToolStreak = 0
-            var jsonRetryUsed = false
-            var pendingCardAction: UiAction.ShowProductCardList? = null
-
-            for (round in 0 until MAX_ROUNDS) {
-                val response = try {
-                    callModelRound({ send(it) }, systemPrompt, toolDefs, useTools)
-                } catch (e: TimeoutCancellationException) {
-                    throw AiServiceException(AiErrorKind.TIMEOUT, "AI 响应超时（${LLM_TIMEOUT_MS / 1000} 秒）", e)
-                }
-
-                val outcome = if (useTools) strategy.extractOutcome(response, toolDefs)
-                else ToolCallOutcome.FinalAnswer(response.content)
-
-                when (outcome) {
-                    is ToolCallOutcome.FinalAnswer -> {
-                        memory.closeTurn(outcome.content)
-                        send(AgentEvent.Response(outcome.content, pendingCardAction))
-                        return@channelFlow
-                    }
-
-                    is ToolCallOutcome.MalformedJson -> {
-                        // JSON 协议下模型想调工具但输出不合法：纠正重试一次，再失败按普通回答展示
-                        if (jsonRetryUsed) {
-                            memory.closeTurn(outcome.raw)
-                            send(AgentEvent.Response(outcome.raw))
-                            return@channelFlow
-                        }
-                        jsonRetryUsed = true
-                        Log.w(TAG, "JSON 模式输出无法解析，纠正重试: ${outcome.raw.take(100)}")
-                        memory.appendAssistantMessage(outcome.raw)
-                        memory.appendUserMessage(
-                            "你上一条回复无法解析为工具调用 JSON。如需调用工具，请只输出一个 JSON 对象：" +
-                                "{\"tool\": \"工具名\", \"arguments\": {参数}}，不要输出其他文字；" +
-                                "如果不需要工具，请直接用自然语言回答。"
-                        )
-                    }
-
-                    is ToolCallOutcome.ToolCalls -> {
-                        val calls = outcome.calls.take(MAX_CALLS_PER_ROUND)
-
-                        // 死循环检测必须在写入 memory 之前——截断路径不会执行工具，
-                        // 若已写入 assistant(tool_calls) 而无 tool 结果，下一轮请求即 400
-                        val signature = calls.joinToString(";") { it.name + ":" + normalizeArgs(it.arguments) }
-                        if (signature == lastSignature) {
-                            Log.w(TAG, "检测到完全相同的工具调用重复，截断")
-                            val msg = "查询过程陷入循环，已中止。请换一种问法试试。"
-                            memory.closeTurn(msg)
-                            send(AgentEvent.Response(msg))
-                            return@channelFlow
-                        }
-                        lastSignature = signature
-
-                        // 同一工具连续调用 3 轮仍未得出结论
-                        if (calls.size == 1) {
-                            if (calls[0].name == lastSingleToolName) sameToolStreak++ else {
-                                sameToolStreak = 1
-                                lastSingleToolName = calls[0].name
-                            }
-                        } else {
-                            sameToolStreak = 0
-                        }
-                        // 同一工具连续调用 N 轮仍未得出结论。N=4：给合理的一次参数修正重试留空间
-                        // （实机证据：模型因结果截断而用 limit 重试一次属正常行为，3 轮误杀）
-                        if (sameToolStreak >= 4) {
-                            Log.w(TAG, "工具 ${lastSingleToolName} 连续调用 $sameToolStreak 轮，截断")
-                            val msg = "同一查询连续执行多次未得出结论，已中止。请换一种问法或缩小查询范围。"
-                            memory.closeTurn(msg)
-                            send(AgentEvent.Response(msg))
-                            return@channelFlow
-                        }
-
-                        memory.appendAssistantToolCalls(response.content.ifBlank { null }, calls)
-                        // 思维链：模型在工具轮的思考/说明文本（FC 模型常为空，有则下发折叠展示）
-                        if (response.content.isNotBlank()) {
-                            send(AgentEvent.Thinking(response.content.trim()))
-                        }
-
-                        // 权限检查 + 执行；finally 保证 tool 结果全部写入 memory（配对完整）
-                        val results = mutableMapOf<String, ToolResult>()
-                        try {
-                            for (call in calls) {
-                                when (ToolPermissionManager.check(call.name)) {
-                                    ToolPermission.BLOCKED -> {
-                                        results[call.id] = ToolResult.failure(
-                                            call, ToolErrorKind.PERMISSION_DENIED, "工具 ${call.name} 已被禁用"
-                                        )
-                                    }
-                                    ToolPermission.CONFIRM -> {
-                                        send(AgentEvent.ToolCallStart(call.name, summarizeArguments(call.arguments)))
-                                        val approved = requestConfirm({ send(it) }, call)
-                                        results[call.id] = if (approved) executor.execute(call)
-                                        else ToolResult.failure(
-                                            call, ToolErrorKind.PERMISSION_DENIED, "用户拒绝执行该操作"
-                                        )
-                                        send(AgentEvent.ToolCallResult(call.name, results[call.id]?.content ?: ""))
-                                    }
-                                    ToolPermission.AUTO -> {
-                                        send(AgentEvent.ToolCallStart(call.name, summarizeArguments(call.arguments)))
-                                        val result = executor.execute(call)
-                                        results[call.id] = result
-                                        send(AgentEvent.ToolCallResult(call.name, result.content))
-                                    }
-                                }
-                            }
-                        } finally {
-                            for (call in calls) {
-                                memory.appendToolResult(call.id, call.name, results[call.id]?.content ?: "[执行中断]")
-                            }
-                        }
-
-                        pendingCardAction = null
-                        for (call in calls) {
-                            results[call.id]?.uiAction?.let { action ->
-                                if (action is UiAction.ShowProductCardList) {
-                                    pendingCardAction = action
-                                } else {
-                                    send(AgentEvent.ActionExecuted(action))
-                                }
-                            }
-                        }
+        var pendingCardAction: UiAction.ShowProductCardList? = null
+        runtime.turn(message, PromptBuilder.build(currentSession)).collect { event ->
+            when (event) {
+                is AiEvent.ThinkingText -> send(AgentEvent.Thinking(event.text))
+                is AiEvent.AnswerDelta -> send(AgentEvent.ResponseChunk(event.text))
+                is AiEvent.ToolCallStarted -> send(
+                    AgentEvent.ToolCallStart(event.call.name, summarizeArguments(event.call.arguments))
+                )
+                is AiEvent.ToolCallFinished -> {
+                    send(AgentEvent.ToolCallResult(event.call.name, event.result.content))
+                    event.result.uiAction?.let { action ->
+                        if (action is UiAction.ShowProductCardList) pendingCardAction = action
+                        else send(AgentEvent.ActionExecuted(action))
                     }
                 }
+                is AiEvent.AwaitingConfirmation -> send(
+                    AgentEvent.ConfirmRequired(
+                        event.requestId, event.call.name, summarizeArguments(event.call.arguments)
+                    )
+                )
+                is AiEvent.ActionAvailable -> Unit // uiAction 已在 ToolCallFinished 分支处理
+                is AiEvent.Completed -> send(AgentEvent.Response(event.answer, pendingCardAction))
+                is AiEvent.Failed -> send(AgentEvent.Error(event.error.message ?: "AI 服务出错", event.error.kind))
             }
-
-            // 轮次耗尽：不带工具做一次总结性回答（同样走流式，总结文本实时外显）
-            val finalResponse = callModelRound({ send(it) }, systemPrompt, toolDefs, useTools = false)
-            memory.closeTurn(finalResponse.content)
-            send(AgentEvent.Response(finalResponse.content))
-        } catch (e: CancellationException) {
-            // 用户停止 / 页面退出：补齐轮次，保持 memory 序列合法
-            memory.closeTurn("（本次回答已停止）")
-            throw e
-        } catch (e: AiServiceException) {
-            Log.e(TAG, "Chat failed (${e.kind})", e)
-            memory.closeTurn("服务暂时不可用：${e.message}")
-            send(AgentEvent.Error(e.message ?: "AI 服务出错", e.kind))
-        } catch (e: Exception) {
-            Log.e(TAG, "Chat failed", e)
-            memory.closeTurn("抱歉，处理请求时出错：${e.message}")
-            send(AgentEvent.Error("AI 服务出错: ${e.message}", null))
         }
-    }
-
-    /** CONFIRM 权限：发事件等 UI 答复，30 秒无响应按拒绝处理 */
-    private suspend fun requestConfirm(
-        send: suspend (AgentEvent) -> Unit,
-        call: AiToolCall
-    ): Boolean {
-        val requestId = UUID.randomUUID().toString()
-        val deferred = CompletableDeferred<Boolean>()
-        pendingConfirms[requestId] = deferred
-        try {
-            send(AgentEvent.ConfirmRequired(requestId, call.name, summarizeArguments(call.arguments)))
-            return withTimeout(CONFIRM_TIMEOUT_MS) { deferred.await() }
-        } catch (e: TimeoutCancellationException) {
-            return false
-        } finally {
-            pendingConfirms.remove(requestId)
-        }
-    }
-
-    private fun normalizeArgs(args: JsonObject): String {
-        val sorted = JsonObject()
-        args.entrySet().sortedBy { it.key }.forEach { (key, value) -> sorted.add(key, value) }
-        return sorted.toString()
     }
 
     private fun summarizeArguments(args: JsonObject): String =
         args.entrySet().joinToString(", ") { (key, value) ->
             "$key=${if (value.isJsonNull) "null" else value.toString().take(50)}"
         }.take(200).ifBlank { "（无参数）" }
-
-    companion object {
-        private const val TAG = "InventoryAiAgent"
-        private const val MAX_ROUNDS = 5
-        private const val MAX_CALLS_PER_ROUND = 4
-        private const val LLM_TIMEOUT_MS = 90_000L
-        private const val CONFIRM_TIMEOUT_MS = 30_000L
-    }
 }

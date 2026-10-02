@@ -1,4 +1,4 @@
-package com.example.inventorymaster.ai.agent
+package com.example.inventorymaster.ai.runtime
 
 import com.example.inventorymaster.ai.provider.AiToolCall
 import com.example.inventorymaster.ai.provider.StreamChunk

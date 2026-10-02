@@ -1,6 +1,6 @@
 package com.example.inventorymaster.ai
 
-import com.example.inventorymaster.ai.agent.ToolCallAccumulator
+import com.example.inventorymaster.ai.runtime.ToolCallAccumulator
 import com.example.inventorymaster.ai.provider.StreamChunk
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
