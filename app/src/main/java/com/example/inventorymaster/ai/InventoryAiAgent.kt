@@ -63,6 +63,7 @@ class InventoryAiAgent(
                         event.requestId, event.call.name, summarizeArguments(event.call.arguments)
                     )
                 )
+                is AiEvent.ConfirmTimedOut -> send(AgentEvent.ConfirmTimedOut(event.requestId))
                 is AiEvent.ActionAvailable -> Unit // uiAction 已在 ToolCallFinished 分支处理
                 is AiEvent.Completed -> send(AgentEvent.Response(event.answer, pendingCardAction))
                 is AiEvent.Failed -> send(AgentEvent.Error(event.error.message ?: "AI 服务出错", event.error.kind))

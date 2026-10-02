@@ -37,6 +37,7 @@ AiService（capabilities 声明 FC/流式）
 | ToolCallStarted(call) | ToolCallStart(name, 参数摘要) |
 | ToolCallFinished(call, result) | ToolCallResult(name, result.content)；result.uiAction → 卡片持有或 ActionExecuted |
 | AwaitingConfirmation(requestId, call) | ConfirmRequired（30s 超时按拒绝） |
+| ConfirmTimedOut(requestId) | ConfirmTimedOut（UI 关闭对应确认弹窗，避免"弹窗挂着但已失效"） |
 | Completed(answer) | Response(answer, pendingCardAction) |
 | Failed(AiServiceException) | Error(message, kind) |
 | AnswerDelta（预留） | ResponseChunk（FC 模型流式正文实时外显；JSON 协议正文不外泄） |
@@ -57,7 +58,8 @@ execute_ui_action（CONFIRM）、ocr_correct、analyze_abnormal、generate_summa
   `AiRecordSqlBuilder.dateCondition`（三形态 OR 区间）或 `DateUtils.toLocalDate`，**禁止假设毫秒**。
   效期显示/排序用 `displayDateExpr` 规范化表达式。
 - **查询呈现各司其职**（用户选型 a）：明细由产品卡片呈现（可点击弹详情），模型只收到
-  总数/效期范围/前3条最近到期提醒；聚合查询返回统计 JSON。0 结果时工具自动放宽诊断
+  总数/效期范围/前3条最近到期提醒（重点行附带 记录ID+任务ID，供 navigate_to_record 跳转——
+  ISSUES-1 修复，不回喂全量 ID）；聚合查询返回统计 JSON。0 结果时工具自动放宽诊断
   （去日期条件、不限任务各数一次）回喂模型。
 
 ## 4. 记忆与持久化

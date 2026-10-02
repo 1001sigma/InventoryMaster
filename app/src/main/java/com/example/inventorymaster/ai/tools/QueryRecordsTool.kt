@@ -123,11 +123,18 @@ class QueryRecordsTool(
                     val row = element.asJsonObject
                     append(
                         "${i + 1}. ${row.text("产品名称")}（批号 ${row.text("批号")}）" +
-                            "｜效期 ${row.text("有效期")}｜库位 ${row.text("库位")}\n"
+                            "｜效期 ${row.text("有效期")}｜库位 ${row.text("库位")}" +
+                            "｜记录ID ${row.text("记录ID")}（任务ID ${row.text("任务ID")}）\n"
                     )
                 }
                 val returnedCount = rows?.size() ?: 0
                 if (returnedCount > 3) append("（其余 ${returnedCount - 3} 条见卡片）")
+                append(
+                    "如需跳转：用户要“跳转/打开某条记录”时调用 execute_ui_action(action_type=navigate_to_record)，" +
+                        "session_id 传该记录的任务ID、record_id 传其记录ID；" +
+                        "用户要“跳转盘库页面/跳转任务N”这类不指定记录的跳转，" +
+                        "用 action_type=navigate_to_session，只需 session_id。\n"
+                )
             }
         }
 

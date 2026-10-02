@@ -23,6 +23,9 @@ sealed class AgentEvent {
         val argumentsSummary: String
     ) : AgentEvent()
 
+    /** CONFIRM 等待超时（按拒绝处理）：UI 关闭对应确认弹窗，避免"弹窗挂着但已失效" */
+    data class ConfirmTimedOut(val requestId: String) : AgentEvent()
+
     data class Response(
         val content: String,
         val cardAction: UiAction.ShowProductCardList? = null

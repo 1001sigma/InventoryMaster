@@ -24,6 +24,9 @@ sealed class AiEvent {
     /** CONFIRM 权限工具等待用户答复；用 respondConfirm 回传，超时按拒绝 */
     data class AwaitingConfirmation(val requestId: String, val call: AiToolCall) : AiEvent()
 
+    /** CONFIRM 等待超时（按拒绝处理）；UI 应关闭对应的确认弹窗，避免"弹窗挂着但已失效" */
+    data class ConfirmTimedOut(val requestId: String) : AiEvent()
+
     /** 工具结果携带的界面动作（uiAction） */
     data class ActionAvailable(val action: UiAction) : AiEvent()
 

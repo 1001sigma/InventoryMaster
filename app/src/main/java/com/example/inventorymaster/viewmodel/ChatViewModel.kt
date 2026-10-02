@@ -278,6 +278,14 @@ class ChatViewModel(
                                 )
                             }
                         }
+                        is AgentEvent.ConfirmTimedOut -> {
+                            // 超时后弹窗已失效（再点"执行"是无效操作）：主动关闭，避免"点了没反应"
+                            _uiState.update {
+                                if (it.pendingConfirm?.requestId == event.requestId) {
+                                    it.copy(pendingConfirm = null)
+                                } else it
+                            }
+                        }
                         is AgentEvent.Response -> {
                             _uiState.update { state ->
                                 val updatedMessages = state.messages.filterNot { msg -> msg.isLoading } + ChatMessage(

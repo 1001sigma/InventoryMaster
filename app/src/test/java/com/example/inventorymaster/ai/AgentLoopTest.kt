@@ -2,6 +2,8 @@ package com.example.inventorymaster.ai
 
 import com.example.inventorymaster.ai.agent.AgentEvent
 import com.example.inventorymaster.ai.memory.ConversationMemory
+import com.example.inventorymaster.ai.runtime.AiEvent
+import com.example.inventorymaster.ai.runtime.AiRuntime
 import com.example.inventorymaster.ai.provider.AiCapabilities
 import com.example.inventorymaster.ai.provider.AiMessage
 import com.example.inventorymaster.ai.provider.AiResponse
@@ -281,6 +283,34 @@ class AgentLoopTest {
         val toolMsg = memory.messagesForRequest().first { it.role == "tool" }
         assertTrue(toolMsg.content.orEmpty().contains("拒绝"))
         assertPairingValid(memory.messagesForRequest())
+    }
+
+    @Test
+    fun `CONFIRM超时按拒绝处理并发出TimedOut事件`() = runBlocking {
+        val tool = FakeTool("execute_ui_action")
+        val service = FakeAiService(
+            script = listOf(
+                AiResponse(content = "", toolCalls = listOf(call("c1", "execute_ui_action"))),
+                AiResponse("确认超时，已取消")
+            )
+        )
+        val memory = ConversationMemory()
+        // 直测运行时：把确认超时压到 100ms（生产 30s）
+        val runtime = AiRuntime(
+            service, ToolRegistry().apply { register(tool) }, memory,
+            policies = AiRuntime.Policies(confirmTimeoutMs = 100)
+        )
+
+        val events = mutableListOf<AiEvent>()
+        runtime.turn("打开第一条记录", "sys").collect { events += it }
+
+        assertTrue(events.any { it is AiEvent.AwaitingConfirmation })
+        assertTrue(events.any { it is AiEvent.ConfirmTimedOut })
+        assertEquals(0, tool.executeCount)
+        val toolMsg = memory.messagesForRequest().first { it.role == "tool" }
+        assertTrue(toolMsg.content.orEmpty().contains("拒绝"))
+        assertPairingValid(memory.messagesForRequest())
+        assertEquals("确认超时，已取消", (events.last() as AiEvent.Completed).answer)
     }
 
     @Test

@@ -7,13 +7,26 @@ import com.google.gson.JsonObject
 
 class ExecuteUiActionTool : AiTool {
     override val name = "execute_ui_action"
-    override val description = "【仅用于界面控制】真正控制手机/前端执行UI动作（如页面跳转、高亮、显示总结弹窗等）。当用户的核心意图是“跳转到”、“进入”、时，在获取到必要的ID后，必须且只能通过调用本工具来完成真正的界面切换。"
+    override val description = """
+        【仅用于界面控制】真正控制手机/前端执行UI动作（页面跳转、高亮、显示弹窗等）。
+        当用户的核心意图是“跳转到”“进入”“打开”某界面时，在获取到必要的ID后，必须且只能通过调用本工具来完成真正的界面切换。
+        各动作所需参数：
+        - navigate_to_session：跳转到任务盘点页。只需 session_id（任务ID，可用 list_sessions 查询，或取自 query_records 结果中的“任务ID”字段）。
+        - navigate_to_record：跳转到某条库存记录。需 session_id + record_id 两个数值（记录ID 取自 query_records 结果中的“记录ID”字段，禁止臆造）。
+        - highlight_field：需 record_id（数值）+ field（字段名）。
+        - open_edit_dialog：需 record_id（数值）。
+        - show_anomalies：需 session_id（数值），可选 anomaly_type。
+        - show_summary：需 session_id（数值）。
+        - navigate_to_product：需 product_key（产品关联键）。
+        用户说“跳转盘库页面”“跳转任务N”这类不指定具体记录的跳转，用 navigate_to_session，不要用 navigate_to_record。
+    """.trimIndent()
     override val parameters: JsonObject = JsonObject().apply {
         addProperty("type", "object")
         add("properties", JsonObject().apply {
             add("action_type", JsonObject().apply {
                 addProperty("type", "string")
                 add("enum", JsonArray().apply {
+                    add("navigate_to_session")
                     add("navigate_to_record")
                     add("highlight_field")
                     add("open_edit_dialog")
@@ -72,6 +85,14 @@ class ExecuteUiActionTool : AiTool {
         }
 
         val action = when (actionType) {
+            "navigate_to_session" -> {
+                val sessionId = arguments.get("session_id")?.takeIf { !it.isJsonNull }?.asLong
+                    ?: return ToolResult.failure(
+                        toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                        "navigate_to_session 需要提供 session_id（数值）。可先用 list_sessions 查询任务ID。"
+                    )
+                UiAction.NavigateToSession(sessionId)
+            }
             "navigate_to_record" -> {
                 val ids = requireNumber("session_id", "record_id")
                     ?: return ToolResult.failure(
@@ -128,7 +149,7 @@ class ExecuteUiActionTool : AiTool {
             }
             else -> return ToolResult.failure(
                 toolCall, ToolErrorKind.INVALID_ARGUMENTS,
-                "未知操作类型 $actionType。可选值：navigate_to_record / highlight_field / open_edit_dialog / show_anomalies / show_summary / navigate_to_product。"
+                "未知操作类型 $actionType。可选值：navigate_to_session / navigate_to_record / highlight_field / open_edit_dialog / show_anomalies / show_summary / navigate_to_product。"
             )
         }
 

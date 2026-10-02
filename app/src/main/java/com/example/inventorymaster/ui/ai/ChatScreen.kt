@@ -81,6 +81,7 @@ fun ChatScreen(
         uiState.pendingActions.firstOrNull()?.let { action ->
             when (action) {
                 is UiAction.NavigateToRecord -> onNavigateToSession(action.sessionId)
+                is UiAction.NavigateToSession -> onNavigateToSession(action.sessionId)
                 is UiAction.NavigateToProduct -> onNavigateToProduct(action.productKey)
                 is UiAction.ShowAnomalies -> onNavigateToSession(action.sessionId)
                 is UiAction.ShowSummary -> onNavigateToSession(action.sessionId)

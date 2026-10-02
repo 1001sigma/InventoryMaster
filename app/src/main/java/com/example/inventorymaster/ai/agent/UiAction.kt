@@ -2,6 +2,7 @@ package com.example.inventorymaster.ai.agent
 
 sealed class UiAction {
     data class NavigateToRecord(val sessionId: Long, val recordId: Long) : UiAction()
+    data class NavigateToSession(val sessionId: Long) : UiAction()
     data class HighlightField(val recordId: Long, val field: String) : UiAction()
     data class OpenEditDialog(val recordId: Long) : UiAction()
     data class ShowAnomalies(val sessionId: Long, val anomalyType: String?) : UiAction()
@@ -14,6 +15,7 @@ sealed class UiAction {
 
     fun toDisplayString(): String = when (this) {
         is NavigateToRecord -> "跳转到记录 #$recordId"
+        is NavigateToSession -> "跳转到任务 #$sessionId"
         is HighlightField -> "高亮字段: $field"
         is OpenEditDialog -> "编辑记录 #$recordId"
         is ShowAnomalies -> "查看异常列表" + (anomalyType?.let { " ($it)" } ?: "")

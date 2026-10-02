@@ -257,7 +257,7 @@ class AiRuntime(
         return AiResponse(content = content.toString(), toolCalls = toolCalls.takeIf { it.isNotEmpty() })
     }
 
-    /** CONFIRM 权限：发事件等 UI 答复，超时无响应按拒绝处理 */
+    /** CONFIRM 权限：发事件等 UI 答复，超时无响应按拒绝处理并通知 UI 关闭弹窗 */
     private suspend fun requestConfirm(
         send: suspend (AiEvent) -> Unit,
         call: AiToolCall
@@ -269,6 +269,7 @@ class AiRuntime(
             send(AiEvent.AwaitingConfirmation(requestId, call))
             return withTimeout(policies.confirmTimeoutMs) { deferred.await() }
         } catch (e: TimeoutCancellationException) {
+            send(AiEvent.ConfirmTimedOut(requestId))
             return false
         } finally {
             pendingConfirms.remove(requestId)

@@ -7,7 +7,23 @@
 
 ## ISSUE-1 「跳转」意图失败：批准后无跳转 / 模型改走查询并触发循环截断
 
-**状态**：待修复（高优先，涉及两个设计缺口叠加）
+**状态**：✅ 已修复（2026-10-02，F1-F4 全部落地）
+
+**修复内容**：
+- **F1** `QueryRecordsTool` 卡片模式概要：前 3 条重点行追加「记录ID（任务ID N）」，content 末尾
+  加跳转用法提示（navigate_to_record 要 记录ID+任务ID；navigate_to_session 只需任务ID）。
+- **F2** `UiAction.NavigateToSession(sessionId)` 新增；`ExecuteUiActionTool` 增加
+  `navigate_to_session` action_type（枚举+业务校验）；`ChatScreen` pendingActions 消费分支接
+  `onNavigateToSession`（回调链 MainActivity→MainScreen→ChatScreen 原已接通）。
+- **F3** `ExecuteUiActionTool.description` 重写为「动作→所需参数」对照表，并明确
+  "跳转盘库页面/任务N 用 navigate_to_session，不要硬凑 navigate_to_record"。
+- **F4** 确认超时事件贯通：`AiEvent.ConfirmTimedOut(requestId)` → `AgentEvent.ConfirmTimedOut` →
+  ChatViewModel 按 requestId 清 `pendingConfirm`（弹窗主动关闭，不再"挂着但已失效"）。
+  回归测试 `AgentLoopTest.CONFIRM超时按拒绝处理并发出TimedOut事件`（100ms 压缩超时直测 AiRuntime）。
+
+**回归验证**：问"跳转到最近一次库存记录"→ 应看到 navigate_to_record 带完整 ID 被批准并
+真实跳转；问"跳转盘库页面"→ 应 navigate_to_session 直达任务详情，不再反问。
+✅ 实机验证通过（2026-10-02）。
 
 **现象**（实机截图 + 黑匣子 chat_messages id=323-336，2026-10-02 13:28 前后）：
 1. "跳转到最近一次库存记录页面" → `query_records(limit=1, order_by=expiry_desc)` **查询成功**（479 条返 1 条）→ 模型以**完全相同参数**再查 → 同签名闸截断"查询过程陷入循环"；
