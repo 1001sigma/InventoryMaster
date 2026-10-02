@@ -7,16 +7,21 @@ import com.example.inventorymaster.ai.InventoryAiAgent
 import com.example.inventorymaster.ai.agent.AgentEvent
 import com.example.inventorymaster.ai.agent.UiAction
 import com.example.inventorymaster.ai.agent.ExpiredProductCardData
+import com.example.inventorymaster.ai.memory.ChatThreadCodec
 import com.example.inventorymaster.ai.memory.ConversationMemory
+import com.example.inventorymaster.ai.provider.AiMessage
 import com.example.inventorymaster.ai.provider.AiProviderConfig
 import com.example.inventorymaster.ai.provider.CloudAiService
 import com.example.inventorymaster.ai.provider.LocalAiService
 import com.example.inventorymaster.ai.tools.ToolRegistry
+import com.example.inventorymaster.data.AppDatabase
 import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.repository.InventoryRepository
+import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,6 +29,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 data class ChatMessage(
     val role: String,
@@ -60,9 +68,20 @@ class ChatViewModel(
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    private val chatDb = AppDatabase.getDatabase(application)
+    private val chatMessageDao = chatDb.chatMessageDao()
+
     private var agent: InventoryAiAgent? = null
     private val memory = ConversationMemory()
     private var currentJob: Job? = null
+
+    /** 当前线程：任务ID字符串（任务内对话）或 THREAD_GLOBAL（无任务全局对话） */
+    private var currentThreadId: String = THREAD_GLOBAL
+
+    /** memory 相对磁盘是否有未落库内容（只在真实对话后置位，避免空快照覆盖历史） */
+    private var memoryDirty = false
+
+    private val persistenceMutex = Mutex()
 
     init {
         viewModelScope.launch {
@@ -78,6 +97,8 @@ class ChatViewModel(
                     }
                 }
         }
+        // 启动即恢复全局线程（未绑定任务时的对话）
+        viewModelScope.launch { loadThread(currentThreadId) }
     }
 
     /** 仅在 provider 实际变化时重建（AiProviderConfig 是 data class，含 Key 编辑在内的一切变更都会触发重建） */
@@ -88,8 +109,27 @@ class ChatViewModel(
         agent = InventoryAiAgent(aiService, registry, memory)
     }
 
+    /**
+     * 绑定当前任务：切换到该任务的专属会话线程（每任务一条历史，互不串上下文）。
+     * 切换前取消在飞生成并等待其收尾落库，避免内存/磁盘错写。
+     */
     fun setCurrentSession(session: InventorySession?) {
         agent?.setCurrentSession(session)
+        val newThreadId = session?.id?.toString() ?: THREAD_GLOBAL
+        if (newThreadId == currentThreadId) return
+
+        val oldThreadId = currentThreadId
+        currentThreadId = newThreadId
+        currentJob?.cancel()
+        viewModelScope.launch {
+            currentJob?.join()
+            if (memoryDirty) {
+                persistThread(oldThreadId)
+                memoryDirty = false
+            }
+            if (currentThreadId != newThreadId) return@launch
+            loadThread(newThreadId)
+        }
     }
 
     fun loadSessionById(sessionId: Long) {
@@ -118,6 +158,8 @@ class ChatViewModel(
             return
         }
 
+        val threadIdAtSend = currentThreadId
+        memoryDirty = true
         currentJob?.cancel()
         currentJob = viewModelScope.launch {
             _uiState.update {
@@ -260,15 +302,29 @@ class ChatViewModel(
                         isProcessing = false
                     )
                 }
+            } finally {
+                // 每轮结束整线程落库（取消路径也在内——Agent 侧已把未完轮次补齐关闭）
+                withContext(NonCancellable) {
+                    persistThread(threadIdAtSend)
+                    memoryDirty = false
+                }
             }
         }
     }
 
     fun clearChat() {
-        currentJob?.cancel()
+        val job = currentJob
         currentJob = null
+        job?.cancel()
         memory.clear()
+        memoryDirty = false
+        val threadId = currentThreadId
         _uiState.update { it.copy(messages = emptyList(), error = null, pendingConfirm = null) }
+        viewModelScope.launch {
+            // 等被取消的在飞任务收尾（其 finally 会先持久化），再删除该线程历史
+            job?.join()
+            chatMessageDao.deleteThread(threadId)
+        }
     }
 
     fun dismissError() {
@@ -292,5 +348,39 @@ class ChatViewModel(
                 pendingActions = currentState.pendingActions + UiAction.OpenEditDialog(productData.recordId)
             )
         }
+    }
+
+    // ── 聊天持久化（按任务分线程）────────────────────────────
+
+    /** 从磁盘加载线程快照：恢复 memory（含 tool 配对）并回显用户/助手气泡 */
+    private suspend fun loadThread(threadId: String) = persistenceMutex.withLock {
+        val messages = ChatThreadCodec.toMessages(chatMessageDao.getMessages(threadId))
+        memory.restoreFrom(messages)
+        _uiState.update { it.copy(messages = displayMessages(messages)) }
+        memoryDirty = false
+    }
+
+    /** 整线程快照落库（delete+insert 事务），与内存结构严格一致 */
+    private suspend fun persistThread(threadId: String) = persistenceMutex.withLock {
+        val rows = ChatThreadCodec.toRows(threadId, memory.messagesForRequest())
+        chatDb.withTransaction {
+            chatMessageDao.deleteThread(threadId)
+            chatMessageDao.insertAll(rows)
+        }
+    }
+
+    /** 恢复时的 UI 映射：只回显用户与助手最终回复，工具调用中间过程不进气泡 */
+    private fun displayMessages(messages: List<AiMessage>): List<ChatMessage> =
+        messages.mapNotNull { m ->
+            when {
+                m.role == "user" -> ChatMessage(role = "user", content = m.content ?: "", isUser = true)
+                m.role == "assistant" && m.toolCalls == null ->
+                    ChatMessage(role = "assistant", content = m.content ?: "", isUser = false)
+                else -> null
+            }
+        }
+
+    companion object {
+        private const val THREAD_GLOBAL = "global"
     }
 }

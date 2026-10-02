@@ -83,6 +83,23 @@ class ConversationMemory {
     /** 导出发送给 LLM 的完整消息序列（含进行中的轮次） */
     fun messagesForRequest(): List<AiMessage> = turns.flatMap { it.messages }
 
+    /**
+     * 从持久化快照恢复（聊天历史跨进程存活）。
+     * 按消息序列重建轮次结构：user 开轮、assistant(tool_calls)/tool 配对追加、
+     * assistant 纯文本收轮（与 closeTurn 语义一致，异常兜底文案同样收轮）。
+     */
+    fun restoreFrom(messages: List<AiMessage>) {
+        clear()
+        for (m in messages) {
+            when {
+                m.role == "user" -> openUserTurn(m.content ?: "")
+                m.role == "tool" -> appendToolResult(m.toolCallId ?: "", "", m.content ?: "")
+                m.role == "assistant" && m.toolCalls != null -> appendAssistantToolCalls(m.content, m.toolCalls)
+                m.role == "assistant" -> closeTurn(m.content ?: "")
+            }
+        }
+    }
+
     fun clear() {
         turns.clear()
         openTurn = null
