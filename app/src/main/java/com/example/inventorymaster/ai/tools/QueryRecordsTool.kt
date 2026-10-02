@@ -109,18 +109,20 @@ class QueryRecordsTool(
             "注意：共 $total 条，仅返回前 $returned 条。"
         } else ""
 
-        // 明细用紧凑 Markdown 表（生 JSON 冗长且易触发记忆截断，实机证据：35条约9KB被截成2K致模型反复重查）
+        // 明细用紧凑列表（手机窄屏：mikepenz 渲染器的表格无列宽分配，5列表格必然挤压错行；
+        // 生 JSON 冗长且易触发记忆截断。每行一条列表项，任何宽度都整洁）
         val content = if (query.aggregate != null) {
             "查询成功，共 $total 条。$note\n统计结果：\n$result"
         } else {
             buildString {
                 append("查询成功，共 $total 条。$note\n")
-                append("以下为明细（Markdown 表格，可直接向用户呈现；已按效期最近在前排序）：\n")
-                append("| 产品名称 | 批号 | 数量 | 库位 | 有效期 |\n")
-                append("|---|---|---|---|---|\n")
-                json.getAsJsonArray("rows")?.forEach { element ->
+                append("以下为明细（已按效期最近在前排序）。请以编号列表逐条完整呈现给用户，不要改为表格、不要省略或合并：\n")
+                json.getAsJsonArray("rows")?.forEachIndexed { i, element ->
                     val row = element.asJsonObject
-                    append("| ${row.text("产品名称")} | ${row.text("批号")} | ${row.num("数量")} | ${row.text("库位")} | ${row.text("有效期")} |\n")
+                    append(
+                        "${i + 1}. ${row.text("产品名称")}｜批号 ${row.text("批号")}" +
+                            "｜数量 ${row.num("数量")}｜库位 ${row.text("库位")}｜效期 ${row.text("有效期")}\n"
+                    )
                 }
             }
         }
