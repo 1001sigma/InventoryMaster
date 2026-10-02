@@ -33,10 +33,8 @@ class CloudAiService(
     private val model = config.model
     private val streamClient = defaultStreamClient()
 
-    override val capabilities = AiCapabilities(
-        functionCalling = config.supportsTools,
-        streaming = true
-    )
+    // 能力 = 用户显式开关 ∩ 模型级目录默认值（AI_Runtime Phase 6：能力跟模型走）
+    override val capabilities = ModelCapabilityCatalog.resolve(config)
 
     private fun validateConfig() {
         if (config.baseUrl.isBlank() || config.model.isBlank()) {
@@ -70,7 +68,7 @@ class CloudAiService(
         tools: List<AiToolDefinition>?
     ): AiResponse = withContext(Dispatchers.IO) {
         try {
-            val requestBody = buildRequestBody(messages, systemPrompt, tools, stream = false)
+            val requestBody = OpenAiRequestBuilder.build(gson, model, messages, systemPrompt, tools, stream = false)
             val url = "${config.baseUrl}/chat/completions"
 
             val request = Request.Builder()
@@ -138,7 +136,7 @@ class CloudAiService(
         tools: List<AiToolDefinition>?
     ): Flow<StreamChunk> = callbackFlow {
         validateConfig()
-        val requestBody = buildRequestBody(messages, systemPrompt, tools, stream = true)
+        val requestBody = OpenAiRequestBuilder.build(gson, model, messages, systemPrompt, tools, stream = true)
         val request = Request.Builder()
             .url("${config.baseUrl}/chat/completions")
             .addHeader("Authorization", "Bearer ${config.apiKey}")
@@ -185,7 +183,8 @@ class CloudAiService(
 
     override suspend fun isAvailable(): Boolean {
         return try {
-            val requestBody = buildRequestBody(
+            val requestBody = OpenAiRequestBuilder.build(
+                gson, model,
                 messages = listOf(AiMessage("user", "Hi")),
                 systemPrompt = null,
                 tools = null,
@@ -241,84 +240,9 @@ class CloudAiService(
         }
     }
 
-    // ─── 核心修改点 1：序列化兼容 ───
-    private fun buildRequestBody(
-        messages: List<AiMessage>,
-        systemPrompt: String?,
-        tools: List<AiToolDefinition>?,
-        stream: Boolean
-    ): String {
-        val json = JsonObject()
+    // ─── 序列化/反序列化兼容怪癖已抽取至 OpenAiRequestBuilder（纯函数，带单测）───
 
-        json.addProperty("model", model)
-        json.addProperty("stream", stream)
-
-        val messagesArray = JsonArray()
-        systemPrompt?.let {
-            messagesArray.add(gson.toJsonTree(AiMessage("system", it)))
-        }
-
-        messages.forEach { msg ->
-            when (msg.role) {
-                "assistant" -> {
-                    val obj = JsonObject()
-                    obj.addProperty("role", "assistant")
-                    // 完美兼容英伟达：如果是 null 强制转为空字符串，防止反序列化异常
-                    obj.addProperty("content", msg.content ?: "")
-
-                    msg.toolCalls?.let { tcList ->
-                        val arr = JsonArray()
-                        tcList.forEach { tc ->
-                            val tcObj = JsonObject()
-                            tcObj.addProperty("id", tc.id)
-                            tcObj.addProperty("type", "function")
-                            val fnObj = JsonObject()
-                            fnObj.addProperty("name", tc.name)
-                            // OpenAI 规范：arguments 必须是 JSON 字符串（不是对象）。
-                            // 之前回传成对象，NVIDIA 等严格网关校验失败直接 500
-                            fnObj.addProperty("arguments", tc.arguments.toString())
-                            tcObj.add("function", fnObj)
-                            arr.add(tcObj)
-                        }
-                        obj.add("tool_calls", arr)
-                    }
-                    messagesArray.add(obj)
-                }
-                "tool" -> {
-                    val obj = JsonObject()
-                    obj.addProperty("role", "tool")
-                    obj.addProperty("tool_call_id", msg.toolCallId ?: "")
-                    obj.addProperty("content", msg.content ?: "")
-                    messagesArray.add(obj)
-                }
-                else -> {
-                    messagesArray.add(gson.toJsonTree(msg))
-                }
-            }
-        }
-        json.add("messages", messagesArray)
-
-        tools?.let { toolDefs ->
-            if (toolDefs.isNotEmpty()) {
-                val toolsArray = JsonArray()
-                toolDefs.forEach { def ->
-                    val toolObj = JsonObject()
-                    toolObj.addProperty("type", "function")
-                    val functionObj = JsonObject()
-                    functionObj.addProperty("name", def.name)
-                    functionObj.addProperty("description", def.description)
-                    functionObj.add("parameters", def.parameters)
-                    toolObj.add("function", functionObj)
-                    toolsArray.add(toolObj)
-                }
-                json.add("tools", toolsArray)
-            }
-        }
-
-        return gson.toJson(json)
-    }
-
-    // ─── 核心修改点 2：反序列化硬防御 ───
+    // ─── 反序列化硬防御 ───
     private fun parseResponse(body: String): AiResponse {
         val json = JsonParser.parseString(body).asJsonObject
         val choices = json.getAsJsonArray("choices")

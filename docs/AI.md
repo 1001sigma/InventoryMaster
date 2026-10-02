@@ -94,5 +94,5 @@ MAX_ROUNDS=5；单轮工具数≤4；LLM 超时 90s；工具超时 10s；CONFIRM
 - `ai/local/*` 为未接线的脚手架（LocalAiService 占位无推理）；端侧路线建议 LiteRT-LM 或局域网
   Ollama（OpenAI 兼容端点），见 4 个参考项目分析（D:\xz\repos\AI Agent\项目分析\）。
 - mikepenz markdown 渲染器（0.28.0）表格无列宽分配——模型输出已被引导用列表而非表格。
-- 待办 Phase：2/3（本轮 AiRuntime/AiEvent）、5/6（Provider Adapter/Capability Matrix）、
-  8/9（高级能力——暂缓）。
+- 待办 Phase：5/6（本轮模型级能力目录 `ModelCapabilityCatalog` + 请求构造 `OpenAiRequestBuilder`）
+  已落地；8/9（高级能力——暂缓）。
