@@ -109,25 +109,29 @@ class QueryRecordsTool(
             "注意：共 $total 条，仅返回前 $returned 条。"
         } else ""
 
-        // 明细用紧凑列表（手机窄屏：mikepenz 渲染器的表格无列宽分配，5列表格必然挤压错行；
-        // 生 JSON 冗长且易触发记忆截断。每行一条列表项，任何宽度都整洁）
+        // 各司其职：完整明细由界面产品卡片呈现（可点击），模型只做概要+重点提醒，
+        // 避免与卡片内容重复（用户选型 a）。聚合查询的统计结果即答案，保持 JSON 输出。
         val content = if (query.aggregate != null) {
             "查询成功，共 $total 条。$note\n统计结果：\n$result"
         } else {
+            val rows = json.getAsJsonArray("rows")
             buildString {
                 append("查询成功，共 $total 条。$note\n")
-                append("以下为明细（已按效期最近在前排序）。请以编号列表逐条完整呈现给用户，不要改为表格、不要省略或合并：\n")
-                json.getAsJsonArray("rows")?.forEachIndexed { i, element ->
+                append("完整明细已通过本次回复下方的产品卡片展示给用户（可点击查看详情），请勿在回答中逐条罗列。\n")
+                append("请向用户给出简明概要（总数、效期范围），并重点提醒以下最近到期的记录：\n")
+                rows?.take(3)?.forEachIndexed { i, element ->
                     val row = element.asJsonObject
                     append(
-                        "${i + 1}. ${row.text("产品名称")}｜批号 ${row.text("批号")}" +
-                            "｜数量 ${row.num("数量")}｜库位 ${row.text("库位")}｜效期 ${row.text("有效期")}\n"
+                        "${i + 1}. ${row.text("产品名称")}（批号 ${row.text("批号")}）" +
+                            "｜效期 ${row.text("有效期")}｜库位 ${row.text("库位")}\n"
                     )
                 }
+                val returnedCount = rows?.size() ?: 0
+                if (returnedCount > 3) append("（其余 ${returnedCount - 3} 条见卡片）")
             }
         }
 
-        // 明细查询结果直接携带产品卡片，不再由 Agent 解析结果字符串（替代 ActionResultExtractor）
+        // 明细查询结果直接携带产品卡片（主要呈现载体）
         val cardAction = buildCardAction(json)
         return ToolResult.success(toolCall, content, data = json, uiAction = cardAction)
     }
