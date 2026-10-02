@@ -1,6 +1,7 @@
 package com.example.inventorymaster.ai.tools
 
 import com.example.inventorymaster.ai.agent.UiAction
+import com.example.inventorymaster.ai.provider.AiToolCall
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 
@@ -43,55 +44,94 @@ class ExecuteUiActionTool : AiTool {
                 addProperty("description", "异常类型筛选")
             })
         })
+        add("required", JsonArray().apply { add("action_type") })
     }
 
-    override suspend fun execute(arguments: JsonObject): String {
+    /**
+     * 各动作的必需参数在工具内做业务校验并明确报错（不默认 0/""），
+     * UiAction 直接放进 ToolResult.uiAction，UI 动作不再走字符串协议。
+     */
+    override suspend fun execute(toolCall: AiToolCall): ToolResult {
+        val arguments = toolCall.arguments
         val actionType = arguments.get("action_type")?.asString
-            ?: return "ACTION_ERROR:缺少 action_type"
+            ?: return ToolResult.failure(toolCall, ToolErrorKind.INVALID_ARGUMENTS, "缺少 action_type")
+
+        fun requireNumber(vararg keys: String): List<Long>? {
+            val values = mutableListOf<Long>()
+            for (key in keys) {
+                val element = arguments.get(key) ?: return null
+                if (!element.isJsonPrimitive || element.isJsonNull) return null
+                val asLong = try {
+                    element.asLong
+                } catch (_: Exception) {
+                    return null
+                }
+                values += asLong
+            }
+            return values
+        }
 
         val action = when (actionType) {
             "navigate_to_record" -> {
-                val sessionId = arguments.get("session_id")?.asLong ?: 0
-                val recordId = arguments.get("record_id")?.asLong ?: 0
-                UiAction.NavigateToRecord(sessionId, recordId)
+                val ids = requireNumber("session_id", "record_id")
+                    ?: return ToolResult.failure(
+                        toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                        "navigate_to_record 需要提供 session_id 与 record_id 两个数值参数。请先查询获得后重试。"
+                    )
+                UiAction.NavigateToRecord(ids[0], ids[1])
             }
             "highlight_field" -> {
-                val recordId = arguments.get("record_id")?.asLong ?: 0
-                val field = arguments.get("field")?.asString ?: ""
+                val recordId = arguments.get("record_id")?.takeIf { !it.isJsonNull }?.asLong
+                val field = arguments.get("field")?.takeIf { it.isJsonPrimitive }?.asString
+                if (recordId == null || field.isNullOrBlank()) {
+                    return ToolResult.failure(
+                        toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                        "highlight_field 需要提供 record_id（数值）与 field（字段名）。"
+                    )
+                }
                 UiAction.HighlightField(recordId, field)
             }
             "open_edit_dialog" -> {
-                val recordId = arguments.get("record_id")?.asLong ?: 0
+                val recordId = arguments.get("record_id")?.takeIf { !it.isJsonNull }?.asLong
+                    ?: return ToolResult.failure(
+                        toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                        "open_edit_dialog 需要提供 record_id（数值）。请先用 query_records 查询获得。"
+                    )
                 UiAction.OpenEditDialog(recordId)
             }
             "show_anomalies" -> {
-                val sessionId = arguments.get("session_id")?.asLong ?: 0
-                val anomalyType = arguments.get("anomaly_type")?.asString
+                val sessionId = arguments.get("session_id")?.takeIf { !it.isJsonNull }?.asLong
+                    ?: return ToolResult.failure(
+                        toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                        "show_anomalies 需要提供 session_id（数值）。可先用 list_sessions 查询任务ID。"
+                    )
+                val anomalyType = arguments.get("anomaly_type")?.takeIf { it.isJsonPrimitive }?.asString
                 UiAction.ShowAnomalies(sessionId, anomalyType)
             }
             "show_summary" -> {
-                val sessionId = arguments.get("session_id")?.asLong ?: 0
+                val sessionId = arguments.get("session_id")?.takeIf { !it.isJsonNull }?.asLong
+                    ?: return ToolResult.failure(
+                        toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                        "show_summary 需要提供 session_id（数值）。可先用 list_sessions 查询任务ID。"
+                    )
                 UiAction.ShowSummary(sessionId)
             }
             "navigate_to_product" -> {
-                val productKey = arguments.get("product_key")?.asString ?: ""
+                val productKey = arguments.get("product_key")?.takeIf { it.isJsonPrimitive }?.asString
+                if (productKey.isNullOrBlank()) {
+                    return ToolResult.failure(
+                        toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                        "navigate_to_product 需要提供 product_key（产品关联键）。"
+                    )
+                }
                 UiAction.NavigateToProduct(productKey)
             }
-            else -> return "ACTION_ERROR:未知操作类型 $actionType"
+            else -> return ToolResult.failure(
+                toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                "未知操作类型 $actionType。可选值：navigate_to_record / highlight_field / open_edit_dialog / show_anomalies / show_summary / navigate_to_product。"
+            )
         }
 
-        return "ACTION:${actionType}:${serializeAction(action)}"
-    }
-
-    private fun serializeAction(action: UiAction): String {
-        return when (action) {
-            is UiAction.NavigateToRecord -> """{"sessionId":${action.sessionId},"recordId":${action.recordId}}"""
-            is UiAction.HighlightField -> """{"recordId":${action.recordId},"field":"${action.field}"}"""
-            is UiAction.OpenEditDialog -> """{"recordId":${action.recordId}}"""
-            is UiAction.ShowAnomalies -> """{"sessionId":${action.sessionId},"anomalyType":${action.anomalyType?.let { "\"$it\"" } ?: "null"}}"""
-            is UiAction.ShowSummary -> """{"sessionId":${action.sessionId}}"""
-            is UiAction.NavigateToProduct -> """{"productKey":"${action.productKey}"}"""
-            is UiAction.ShowProductCardList -> """{"title":"${action.title}","count":${action.products.size}}"""
-        }
+        return ToolResult.success(toolCall, "已发起界面动作：$actionType", uiAction = action)
     }
 }

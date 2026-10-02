@@ -1,5 +1,6 @@
 package com.example.inventorymaster.ai.tools
 
+import com.example.inventorymaster.ai.provider.AiToolCall
 import com.example.inventorymaster.ai.tools.anomaly.AnomalyDetector
 import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.repository.InventoryRepository
@@ -26,12 +27,15 @@ class GenerateSummaryTool(
         add("required", com.google.gson.JsonArray().apply { add("session_id") })
     }
 
-    override suspend fun execute(arguments: JsonObject): String {
-        val sessionId = arguments.get("session_id")?.asString?.toLongOrNull()
-            ?: return "错误：需要提供有效的盘存任务ID"
+    override suspend fun execute(toolCall: AiToolCall): ToolResult {
+        val sessionId = toolCall.arguments.get("session_id")?.takeIf { !it.isJsonNull }?.asLong
+            ?: return ToolResult.failure(
+                toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                "需要提供有效的盘存任务ID（数值）。可先用 list_sessions 查询任务ID。"
+            )
 
         val records = repository.getSessionRecords(sessionId)
-        if (records.isEmpty()) return "该盘存任务暂无记录"
+        if (records.isEmpty()) return ToolResult.success(toolCall, "该盘存任务暂无记录")
 
         val settings = settingsRepository.settingsFlow.first()
         val nearExpiryDays = settings.nearExpiryThresholdDays
@@ -54,7 +58,7 @@ class GenerateSummaryTool(
         // 异常检测
         val anomalyResult = AnomalyDetector.analyze(records, nearExpiryDays)
 
-        return buildString {
+        return ToolResult.success(toolCall, buildString {
             appendLine("盘点总结报告")
             appendLine("━━━━━━━━━━━━━━━━━━━━━━")
             appendLine()
@@ -97,6 +101,6 @@ class GenerateSummaryTool(
             } else {
                 appendLine("未发现异常数据。")
             }
-        }
+        })
     }
 }

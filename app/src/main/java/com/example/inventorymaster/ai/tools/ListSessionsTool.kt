@@ -1,5 +1,6 @@
 package com.example.inventorymaster.ai.tools
 
+import com.example.inventorymaster.ai.provider.AiToolCall
 import com.example.inventorymaster.data.repository.InventoryRepository
 import com.google.gson.JsonObject
 import java.text.SimpleDateFormat
@@ -24,14 +25,15 @@ class ListSessionsTool(
         add("properties", JsonObject())
     }
 
-    override suspend fun execute(arguments: JsonObject): String {
+    override suspend fun execute(toolCall: AiToolCall): ToolResult {
         val sessions = repository.getAllSessionsOnce()
-        if (sessions.isEmpty()) return "系统中暂无盘存任务。"
+        if (sessions.isEmpty()) return ToolResult.success(toolCall, "系统中暂无盘存任务。")
 
         val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        return sessions.take(MAX_SESSIONS).joinToString("\n") { session ->
+        val content = sessions.take(MAX_SESSIONS).joinToString("\n") { session ->
             "任务ID: ${session.id} | 名称: ${session.name} | 创建日期: ${formatter.format(Date(session.date))} | 状态: ${statusText(session.status)}"
         } + if (sessions.size > MAX_SESSIONS) "\n[仅显示最近 $MAX_SESSIONS 个，共 ${sessions.size} 个]" else ""
+        return ToolResult.success(toolCall, content)
     }
 
     private fun statusText(status: Int) = when (status) {

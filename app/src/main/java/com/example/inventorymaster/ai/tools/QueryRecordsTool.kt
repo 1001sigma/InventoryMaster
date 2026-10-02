@@ -1,5 +1,8 @@
 package com.example.inventorymaster.ai.tools
 
+import com.example.inventorymaster.ai.agent.ExpiredProductCardData
+import com.example.inventorymaster.ai.agent.UiAction
+import com.example.inventorymaster.ai.provider.AiToolCall
 import com.example.inventorymaster.data.repository.AiRecordQuery
 import com.example.inventorymaster.data.repository.InventoryRepository
 import com.google.gson.JsonObject
@@ -72,31 +75,70 @@ class QueryRecordsTool(
         }
     """).asJsonObject
 
-    override suspend fun execute(arguments: JsonObject): String {
-        val query = parseQuery(arguments)
-            ?: return "参数错误：日期必须为 YYYY-MM-DD 格式，数字必须为数值。请修正后重试。"
+    override suspend fun execute(toolCall: AiToolCall): ToolResult {
+        val query = parseQuery(toolCall.arguments)
+            ?: return ToolResult.failure(
+                toolCall,
+                ToolErrorKind.INVALID_ARGUMENTS,
+                "参数错误：日期必须为 YYYY-MM-DD 格式，数字必须为数值。请修正后重试。"
+            )
 
         val result = repository.queryRecordsForAi(query)
-        return try {
-            val json = JsonParser.parseString(result).asJsonObject
-            when (json.get("status")?.asString) {
-                "error" -> "数据库查询失败：${json.get("message")?.asString}。请告知用户遇到了技术错误。"
-                else -> {
-                    val total = json.get("total")?.asLong ?: 0L
-                    if (total == 0L) {
-                        "查询成功，但未找到任何匹配记录。请如实告知用户未查到相关数据。"
-                    } else {
-                        val returned = json.get("returned")?.asLong ?: 0L
-                        val note = if (json.get("truncated")?.asBoolean == true) {
-                            "注意：共 $total 条，仅返回前 $returned 条。"
-                        } else ""
-                        "查询成功，共 $total 条。$note\n请用 Markdown 表格向用户呈现以下数据（日期已是 YYYY-MM-DD 格式）：\n$result"
-                    }
-                }
-            }
+        val json = try {
+            JsonParser.parseString(result).asJsonObject
         } catch (e: Exception) {
-            "数据库查询结果解析失败：${e.message}"
+            return ToolResult.failure(toolCall, ToolErrorKind.BUSINESS_ERROR, "数据库查询结果解析失败：${e.message}")
         }
+
+        when (json.get("status")?.asString) {
+            "error" -> return ToolResult.failure(
+                toolCall,
+                ToolErrorKind.BUSINESS_ERROR,
+                "数据库查询失败：${json.get("message")?.asString}。请告知用户遇到了技术错误。"
+            )
+        }
+
+        val total = json.get("total")?.asLong ?: 0L
+        if (total == 0L) {
+            return ToolResult.success(toolCall, "查询成功，但未找到任何匹配记录。请如实告知用户未查到相关数据。")
+        }
+
+        val returned = json.get("returned")?.asLong ?: 0L
+        val note = if (json.get("truncated")?.asBoolean == true) {
+            "注意：共 $total 条，仅返回前 $returned 条。"
+        } else ""
+        val content = "查询成功，共 $total 条。$note\n请用 Markdown 表格向用户呈现以下数据（日期已是 YYYY-MM-DD 格式）：\n$result"
+
+        // 明细查询结果直接携带产品卡片，不再由 Agent 解析结果字符串（替代 ActionResultExtractor）
+        val cardAction = buildCardAction(json)
+        return ToolResult.success(toolCall, content, data = json, uiAction = cardAction)
+    }
+
+    /** 明细行（带 记录ID）转为产品卡片；聚合结果无 记录ID 字段，不出卡片 */
+    private fun buildCardAction(json: JsonObject): UiAction? {
+        val rows = json.getAsJsonArray("rows") ?: return null
+        if (rows.size() == 0 || rows[0].asJsonObject.get("记录ID") == null) return null
+
+        val cardProducts = mutableListOf<ExpiredProductCardData>()
+        for (element in rows.take(MAX_CARDS)) {
+            val obj = element.asJsonObject
+            cardProducts.add(
+                ExpiredProductCardData(
+                    productKey = obj.get("产品编码")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                    productName = obj.get("产品名称")?.takeIf { !it.isJsonNull }?.asString ?: "未知医疗器械",
+                    batchNumber = obj.get("批号")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                    expiryDateStr = obj.get("有效期")?.takeIf { !it.isJsonNull }?.asString ?: "未标明",
+                    quantity = obj.get("数量")?.takeIf { !it.isJsonNull }?.let {
+                        try { it.asDouble } catch (e: Exception) { 0.0 }
+                    } ?: 0.0,
+                    sessionId = obj.get("任务ID")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                    recordId = obj.get("记录ID")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                )
+            )
+        }
+        return if (cardProducts.isNotEmpty()) {
+            UiAction.ShowProductCardList(title = "查询结果中的重点物资：", products = cardProducts)
+        } else null
     }
 
     private fun parseQuery(args: JsonObject): AiRecordQuery? {
@@ -170,5 +212,6 @@ class QueryRecordsTool(
 
     companion object {
         private const val DEFAULT_LIMIT = 20
+        private const val MAX_CARDS = 10
     }
 }

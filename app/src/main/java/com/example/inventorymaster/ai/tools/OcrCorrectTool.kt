@@ -2,6 +2,7 @@ package com.example.inventorymaster.ai.tools
 
 import com.example.inventorymaster.ai.provider.AiMessage
 import com.example.inventorymaster.ai.provider.AiService
+import com.example.inventorymaster.ai.provider.AiToolCall
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 
@@ -31,12 +32,12 @@ class OcrCorrectTool(
         add("required", com.google.gson.JsonArray().apply { add("text") })
     }
 
-    override suspend fun execute(arguments: JsonObject): String {
-        val text = arguments.get("text")?.asString
-            ?: return "错误：需要提供 OCR 文本"
-        val context = arguments.get("context")?.asString ?: "general"
-
-        if (text.isBlank()) return "错误：OCR 文本不能为空"
+    override suspend fun execute(toolCall: AiToolCall): ToolResult {
+        val text = toolCall.arguments.get("text")?.asString ?: ""
+        if (text.isBlank()) {
+            return ToolResult.failure(toolCall, ToolErrorKind.INVALID_ARGUMENTS, "OCR 文本不能为空")
+        }
+        val context = toolCall.arguments.get("context")?.asString ?: "general"
 
         val contextDesc = when (context) {
             "product_name" -> "产品名称"
@@ -79,7 +80,7 @@ class OcrCorrectTool(
                 val confidence = json.get("confidence")?.asString ?: "中"
                 val changes = json.getAsJsonArray("changes")
 
-                buildString {
+                val resultText = buildString {
                     appendLine("【AI 纠错】原文: $text")
                     appendLine("纠正后: $corrected")
                     if (changes != null && changes.size() > 0) {
@@ -88,11 +89,12 @@ class OcrCorrectTool(
                     }
                     appendLine("置信度: $confidence")
                 }
+                ToolResult.success(toolCall, resultText, data = json)
             } else {
-                "AI 返回格式异常，请重试。原始回复: $content"
+                ToolResult.failure(toolCall, ToolErrorKind.BUSINESS_ERROR, "AI 返回格式异常，请重试。原始回复: $content")
             }
         } catch (e: Exception) {
-            "AI 纠错失败: ${e.message}"
+            ToolResult.failure(toolCall, ToolErrorKind.BUSINESS_ERROR, "AI 纠错失败: ${e.message}")
         }
     }
 }

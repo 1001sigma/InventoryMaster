@@ -1,5 +1,6 @@
 package com.example.inventorymaster.ai.tools
 
+import com.example.inventorymaster.ai.provider.AiToolCall
 import com.example.inventorymaster.data.repository.InventoryRepository
 import com.google.gson.JsonObject
 
@@ -19,16 +20,19 @@ class GetProductDetailTool(
         add("required", com.google.gson.JsonArray().apply { add("product_key") })
     }
 
-    override suspend fun execute(arguments: JsonObject): String {
-        val productKey = arguments.get("product_key")?.asString
-            ?: return "错误：需要提供产品标识"
-
+    override suspend fun execute(toolCall: AiToolCall): ToolResult {
         // 组合键精确查找；未命中时按 DI 兜底（AI 通常拿裸 DI，可能对应多条不同物料编码的产品）
-        val candidates = listOfNotNull(repository.getProductByKey(productKey))
-            .ifEmpty { repository.getProductsByDi(productKey) }
-        if (candidates.isEmpty()) return "未找到产品: $productKey"
+        val candidates = listOfNotNull(repository.getProductByKey(toolCall.arguments.get("product_key")?.asString ?: ""))
+            .ifEmpty { repository.getProductsByDi(toolCall.arguments.get("product_key")?.asString ?: "") }
+        if (candidates.isEmpty()) {
+            return ToolResult.failure(
+                toolCall,
+                ToolErrorKind.NOT_FOUND,
+                "未找到产品: ${toolCall.arguments.get("product_key")?.asString ?: ""}。请确认产品编码或 DI 是否正确，可先用 query_records 按名称关键词查找。"
+            )
+        }
 
-        return candidates.joinToString("\n\n") { product ->
+        val content = candidates.joinToString("\n\n") { product ->
             buildString {
                 appendLine("产品详细信息:")
                 appendLine("- 产品名称: ${product.productName}")
@@ -43,5 +47,6 @@ class GetProductDetailTool(
                 appendLine("- 来源: ${product.source ?: "未知"}")
             }
         }
+        return ToolResult.success(toolCall, content)
     }
 }

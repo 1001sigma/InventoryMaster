@@ -1,7 +1,6 @@
 package com.example.inventorymaster.ai
 
 import android.util.Log
-import com.example.inventorymaster.ai.agent.ActionResultExtractor
 import com.example.inventorymaster.ai.agent.AgentEvent
 import com.example.inventorymaster.ai.agent.AiAgent
 import com.example.inventorymaster.ai.agent.UiAction
@@ -19,10 +18,12 @@ import com.example.inventorymaster.ai.provider.AiServiceException
 import com.example.inventorymaster.ai.provider.AiToolCall
 import com.example.inventorymaster.ai.provider.AiToolDefinition
 import com.example.inventorymaster.ai.provider.StreamChunk
+import com.example.inventorymaster.ai.tools.ToolErrorKind
 import com.example.inventorymaster.ai.tools.ToolExecutor
 import com.example.inventorymaster.ai.tools.ToolPermission
 import com.example.inventorymaster.ai.tools.ToolPermissionManager
 import com.example.inventorymaster.ai.tools.ToolRegistry
+import com.example.inventorymaster.ai.tools.ToolResult
 import com.example.inventorymaster.data.entity.InventorySession
 import com.google.gson.JsonObject
 import kotlinx.coroutines.CancellationException
@@ -189,37 +190,41 @@ class InventoryAiAgent(
                         memory.appendAssistantToolCalls(response.content.ifBlank { null }, calls)
 
                         // 权限检查 + 执行；finally 保证 tool 结果全部写入 memory（配对完整）
-                        val results = mutableMapOf<String, String>()
+                        val results = mutableMapOf<String, ToolResult>()
                         try {
                             for (call in calls) {
                                 when (ToolPermissionManager.check(call.name)) {
                                     ToolPermission.BLOCKED -> {
-                                        results[call.id] = "工具 ${call.name} 已被禁用"
+                                        results[call.id] = ToolResult.failure(
+                                            call, ToolErrorKind.PERMISSION_DENIED, "工具 ${call.name} 已被禁用"
+                                        )
                                     }
                                     ToolPermission.CONFIRM -> {
                                         send(AgentEvent.ToolCallStart(call.name))
                                         val approved = requestConfirm({ send(it) }, call)
                                         results[call.id] = if (approved) executor.execute(call)
-                                        else "用户拒绝执行该操作"
-                                        send(AgentEvent.ToolCallResult(call.name, results[call.id] ?: ""))
+                                        else ToolResult.failure(
+                                            call, ToolErrorKind.PERMISSION_DENIED, "用户拒绝执行该操作"
+                                        )
+                                        send(AgentEvent.ToolCallResult(call.name, results[call.id]?.content ?: ""))
                                     }
                                     ToolPermission.AUTO -> {
                                         send(AgentEvent.ToolCallStart(call.name))
-                                        results[call.id] = executor.execute(call)
-                                        send(AgentEvent.ToolCallResult(call.name, results[call.id] ?: ""))
+                                        val result = executor.execute(call)
+                                        results[call.id] = result
+                                        send(AgentEvent.ToolCallResult(call.name, result.content))
                                     }
                                 }
                             }
                         } finally {
                             for (call in calls) {
-                                memory.appendToolResult(call.id, call.name, results[call.id] ?: "[执行中断]")
+                                memory.appendToolResult(call.id, call.name, results[call.id]?.content ?: "[执行中断]")
                             }
                         }
 
                         pendingCardAction = null
                         for (call in calls) {
-                            val result = results[call.id] ?: continue
-                            ActionResultExtractor.extract(call.name, result)?.let { action ->
+                            results[call.id]?.uiAction?.let { action ->
                                 if (action is UiAction.ShowProductCardList) {
                                     pendingCardAction = action
                                 } else {

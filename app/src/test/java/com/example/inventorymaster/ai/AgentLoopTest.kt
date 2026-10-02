@@ -13,6 +13,7 @@ import com.example.inventorymaster.ai.provider.AiToolDefinition
 import com.example.inventorymaster.ai.provider.StreamChunk
 import com.example.inventorymaster.ai.tools.AiTool
 import com.example.inventorymaster.ai.tools.ToolRegistry
+import com.example.inventorymaster.ai.tools.ToolResult
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.CompletableDeferred
@@ -91,10 +92,28 @@ class AgentLoopTest {
         var lastArgs: JsonObject? = null
             private set
 
-        override suspend fun execute(arguments: JsonObject): String {
+        override suspend fun execute(toolCall: AiToolCall): ToolResult {
             executeCount++
-            lastArgs = arguments
-            return result
+            lastArgs = toolCall.arguments
+            return ToolResult.success(toolCall, result)
+        }
+    }
+
+    /** 带必填参数 schema 的测试工具（验证 ToolValidator 拦截） */
+    private class RequiredTool(
+        override val name: String
+    ) : AiTool {
+        override val description = "带必填参数的测试工具"
+        override val parameters: JsonObject = JsonParser.parseString(
+            """{"type":"object","properties":{"session_id":{"type":"integer"}},"required":["session_id"]}"""
+        ).asJsonObject
+
+        var executeCount = 0
+            private set
+
+        override suspend fun execute(toolCall: AiToolCall): ToolResult {
+            executeCount++
+            return ToolResult.success(toolCall, "ok")
         }
     }
 
@@ -441,6 +460,50 @@ class AgentLoopTest {
         assertEquals(1, service.streamCalls.size)
         assertEquals(1, service.calls.size)
         assertEquals("降级回答", (events.last() as AgentEvent.Response).content)
+        assertPairingValid(memory.messagesForRequest())
+    }
+
+    // ── 结构化 ToolResult / Agent Recovery（AI_Runtime Phase 1）─────────
+
+    @Test
+    fun `未注册工具回喂错误与可用清单供模型自纠`() = runBlocking {
+        val tool = FakeTool("query_records")
+        val service = FakeAiService(
+            script = listOf(
+                AiResponse(content = "", toolCalls = listOf(call("c1", "no_such_tool"))),
+                AiResponse("已为您换用正确工具完成")
+            )
+        )
+        val (agent, memory) = newAgent(service, tool)
+
+        val events = collect(agent, "查询")
+
+        assertEquals(0, tool.executeCount)
+        assertEquals(2, service.calls.size)
+        val toolMsg = memory.messagesForRequest().first { it.role == "tool" }
+        assertTrue(toolMsg.content.orEmpty().contains("未找到工具"))
+        assertTrue(toolMsg.content.orEmpty().contains("query_records"))
+        assertEquals("已为您换用正确工具完成", (events.last() as AgentEvent.Response).content)
+        assertPairingValid(memory.messagesForRequest())
+    }
+
+    @Test
+    fun `必填参数缺失被校验拦截不执行工具`() = runBlocking {
+        val tool = RequiredTool("query_records")
+        val service = FakeAiService(
+            script = listOf(
+                AiResponse(content = "", toolCalls = listOf(call("c1", "query_records", "{}"))),
+                AiResponse("已补全参数重新查询")
+            )
+        )
+        val (agent, memory) = newAgent(service, tool)
+
+        val events = collect(agent, "查询")
+
+        assertEquals(0, tool.executeCount)
+        val toolMsg = memory.messagesForRequest().first { it.role == "tool" }
+        assertTrue(toolMsg.content.orEmpty().contains("缺少必填参数"))
+        assertTrue(toolMsg.content.orEmpty().contains("session_id"))
         assertPairingValid(memory.messagesForRequest())
     }
 }

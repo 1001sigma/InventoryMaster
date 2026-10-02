@@ -1,5 +1,6 @@
 package com.example.inventorymaster.ai.tools
 
+import com.example.inventorymaster.ai.provider.AiToolCall
 import com.example.inventorymaster.ai.tools.anomaly.AnomalyDetector
 import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.repository.InventoryRepository
@@ -23,12 +24,15 @@ class AnalyzeAbnormalTool(
         add("required", com.google.gson.JsonArray().apply { add("session_id") })
     }
 
-    override suspend fun execute(arguments: JsonObject): String {
-        val sessionId = arguments.get("session_id")?.asString?.toLongOrNull()
-            ?: return "错误：需要提供有效的盘存任务ID"
+    override suspend fun execute(toolCall: AiToolCall): ToolResult {
+        val sessionId = toolCall.arguments.get("session_id")?.takeIf { !it.isJsonNull }?.asLong
+            ?: return ToolResult.failure(
+                toolCall, ToolErrorKind.INVALID_ARGUMENTS,
+                "需要提供有效的盘存任务ID（数值）。可先用 list_sessions 查询任务ID。"
+            )
 
         val records = repository.getSessionRecords(sessionId)
-        if (records.isEmpty()) return "该盘存任务暂无记录"
+        if (records.isEmpty()) return ToolResult.success(toolCall, "该盘存任务暂无记录")
 
         val settings = settingsRepository.settingsFlow.first()
         val nearExpiryDays = settings.nearExpiryThresholdDays
@@ -36,10 +40,10 @@ class AnalyzeAbnormalTool(
         val result = AnomalyDetector.analyze(records, nearExpiryDays)
 
         if (result.summary.anomalyCount == 0) {
-            return "未发现异常，共 ${result.summary.totalCount} 条记录全部正常。"
+            return ToolResult.success(toolCall, "未发现异常，共 ${result.summary.totalCount} 条记录全部正常。")
         }
 
-        return buildString {
+        return ToolResult.success(toolCall, buildString {
             appendLine("异常分析报告:")
             appendLine("共扫描 ${result.summary.totalCount} 条记录，发现 ${result.summary.anomalyCount} 条异常")
             appendLine()
@@ -75,8 +79,7 @@ class AnalyzeAbnormalTool(
             if (result.quantityMismatchRecords.isNotEmpty()) {
                 appendLine("数量差异（${result.quantityMismatchRecords.size}条）:")
                 result.quantityMismatchRecords.take(5).forEach { appendLine("- ${it.message}") }
-                if (result.quantityMismatchRecords.size > 5) appendLine("  ...等共 ${result.quantityMismatchRecords.size} 条")
             }
-        }
+        })
     }
 }
