@@ -1,5 +1,14 @@
 package com.example.inventorymaster.ui.ai
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,12 +23,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
@@ -31,6 +43,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -38,6 +51,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,10 +85,41 @@ fun ChatScreen(
     // 产品卡片点击 → 本地详情弹窗（卡片自带数据，无需查询；按需求不强求跳编辑）
     var cardDetail by remember { mutableStateOf<ExpiredProductCardData?>(null) }
 
-    LaunchedEffect(uiState.messages.size) {
-        if (uiState.messages.isNotEmpty()) {
-            listState.animateScrollToItem(uiState.messages.size - 1)
+    // ── 滚动锚定与脱钩（docs/AI_UI_OPTIMIZATION.md P0-1）──────────────
+    // 列表 reverseLayout：数据末条在视觉底部（index 0），scrollToItem(0) 恒贴底。
+    var stickToBottom by remember { mutableStateOf(true) }
+    val isAtBottom by remember {
+        derivedStateOf {
+            listState.firstVisibleItemIndex == 0 &&
+                listState.firstVisibleItemScrollOffset <= BOTTOM_STICK_THRESHOLD_PX
         }
+    }
+    // 用户拖动即脱钩：绝不在翻历史时强行拉回底部
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) stickToBottom = false
+        }
+    }
+    // 拖回底部阈值内 → 自动重新锚定
+    LaunchedEffect(isAtBottom) {
+        if (isAtBottom) stickToBottom = true
+    }
+    // 新消息到达：锚定时平滑贴底
+    LaunchedEffect(uiState.messages.size, stickToBottom) {
+        if (stickToBottom && uiState.messages.isNotEmpty()) {
+            listState.animateScrollToItem(0)
+        }
+    }
+    // 流式内容增长：锚定时瞬时贴底（无动画，跟随打字机）
+    val lastContentLength = uiState.messages.lastOrNull()?.content?.length ?: 0
+    LaunchedEffect(lastContentLength, stickToBottom) {
+        if (stickToBottom && uiState.messages.isNotEmpty()) {
+            listState.scrollToItem(0)
+        }
+    }
+    // 切换线程重置锚定
+    LaunchedEffect(uiState.currentThreadId) {
+        stickToBottom = true
     }
 
     LaunchedEffect(uiState.pendingActions) {
@@ -189,25 +234,81 @@ fun ChatScreen(
                         }
                     }
                 } else {
-                    LazyColumn(
-                        state = listState,
+                    Box(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp)
                     ) {
-                        items(uiState.messages) { message ->
-                            ChatMessageItem(message, showThinking)
-                            message.cardAction?.let { cardPayload ->
-                                ProductCardListWidget(
-                                    cardPayload = cardPayload,
-                                    onCardProductClick = { productData ->
-                                        cardDetail = productData
-                                    },
-                                    modifier = Modifier.padding(start = 16.dp, end = 48.dp, bottom = 8.dp)
+                        LazyColumn(
+                            state = listState,
+                            reverseLayout = true,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp)
+                        ) {
+                            items(uiState.messages.asReversed(), key = { it.id }) { message ->
+                                ChatMessageItem(
+                                    message = message,
+                                    showThinking = showThinking,
+                                    isProcessing = uiState.isProcessing,
+                                    canRetry = uiState.messages.any { it.isUser },
+                                    onRegenerate = { viewModel.regenerateLast() },
+                                    onRetry = { viewModel.retryLast() }
                                 )
+                                message.cardAction?.let { cardPayload ->
+                                    ProductCardListWidget(
+                                        cardPayload = cardPayload,
+                                        onCardProductClick = { productData ->
+                                            cardDetail = productData
+                                        },
+                                        modifier = Modifier.padding(start = 16.dp, end = 48.dp, bottom = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // 回底悬浮钮：脱离底部时淡入；流式中有新内容时右上角呼吸点提示
+                        // （全限定调用：避免命中外层 ColumnScope 的 AnimatedVisibility 扩展重载）
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = !isAtBottom && uiState.messages.isNotEmpty(),
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(end = 16.dp, bottom = 12.dp),
+                            enter = fadeIn(tween(150)) + scaleIn(initialScale = 0.8f),
+                            exit = fadeOut(tween(150)) + scaleOut(targetScale = 0.8f)
+                        ) {
+                            Box {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.surface,
+                                    tonalElevation = 3.dp,
+                                    shadowElevation = 2.dp,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                ) {
+                                    IconButton(
+                                        onClick = {
+                                            scope.launch { listState.animateScrollToItem(0) }
+                                        },
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "回到底部",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (uiState.isProcessing) {
+                                    Box(
+                                        Modifier
+                                            .align(Alignment.TopEnd)
+                                            .size(10.dp)
+                                            .background(MaterialTheme.colorScheme.primary, CircleShape)
+                                            .border(1.5.dp, MaterialTheme.colorScheme.surface, CircleShape)
+                                    )
+                                }
                             }
                         }
                     }
@@ -302,3 +403,6 @@ fun ChatScreen(
         )
     }
 }
+
+/** 距底多少 px 内视为"在底部"（docs/AI_UI_OPTIMIZATION.md 设计基线） */
+private const val BOTTOM_STICK_THRESHOLD_PX = 200

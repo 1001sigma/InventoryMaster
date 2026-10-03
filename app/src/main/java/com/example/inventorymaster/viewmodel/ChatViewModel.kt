@@ -35,6 +35,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class ChatMessage(
+    /** LazyColumn 稳定 key（流式内容增长/插入时保持条目身份，避免状态丢失与视口跳动） */
+    val id: Int = 0,
     val role: String,
     val content: String,
     val isUser: Boolean,
@@ -85,6 +87,13 @@ class ChatViewModel(
     private var agent: InventoryAiAgent? = null
     private val memory = ConversationMemory()
     private var currentJob: Job? = null
+
+    /** 消息稳定 id 发号器（LazyColumn key 用） */
+    private var nextMessageId = 0
+    private fun nextMessageId(): Int = ++nextMessageId
+
+    /** 最近一条用户消息（重新生成/错误重试共用；切线程/清空时重置） */
+    private var lastUserMessage: String? = null
 
     /** 当前线程：任务ID字符串（任务内对话）或 THREAD_GLOBAL（无任务全局对话） */
     private var currentThreadId: String = THREAD_GLOBAL
@@ -208,11 +217,13 @@ class ChatViewModel(
 
         val threadIdAtSend = currentThreadId
         memoryDirty = true
+        lastUserMessage = message
         currentJob?.cancel()
         currentJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     messages = it.messages + ChatMessage(
+                        id = nextMessageId(),
                         role = "user",
                         content = message,
                         isUser = true
@@ -230,6 +241,7 @@ class ChatViewModel(
                             _uiState.update {
                                 it.copy(
                                     messages = it.messages + ChatMessage(
+                                        id = nextMessageId(),
                                         role = "assistant",
                                         content = event.message,
                                         isUser = false,
@@ -242,6 +254,7 @@ class ChatViewModel(
                             _uiState.update {
                                 it.copy(
                                     messages = it.messages + ChatMessage(
+                                        id = nextMessageId(),
                                         role = "tool",
                                         content = if (event.argumentsSummary.isBlank()) "正在调用 ${event.toolName}..."
                                         else "调用 ${event.toolName}(${event.argumentsSummary})",
@@ -256,6 +269,7 @@ class ChatViewModel(
                             _uiState.update { state ->
                                 val firstLine = event.result.lineSequence().firstOrNull()?.take(60) ?: "返回结果"
                                 val updatedMessages = state.messages.dropLast(1) + ChatMessage(
+                                    id = nextMessageId(),
                                     role = "tool",
                                     content = "${event.toolName} · $firstLine",
                                     isUser = false,
@@ -289,6 +303,7 @@ class ChatViewModel(
                         is AgentEvent.Response -> {
                             _uiState.update { state ->
                                 val updatedMessages = state.messages.filterNot { msg -> msg.isLoading } + ChatMessage(
+                                    id = nextMessageId(),
                                     role = "assistant",
                                     content = event.content,
                                     isUser = false,
@@ -311,6 +326,7 @@ class ChatViewModel(
                                 } else {
                                     state.copy(
                                         messages = state.messages + ChatMessage(
+                                            id = nextMessageId(),
                                             role = "assistant",
                                             content = event.content,
                                             isUser = false,
@@ -324,6 +340,7 @@ class ChatViewModel(
                             _uiState.update {
                                 it.copy(
                                     messages = it.messages.filterNot { msg -> msg.isLoading } + ChatMessage(
+                                        id = nextMessageId(),
                                         role = "error",
                                         content = event.message,
                                         isUser = false
@@ -344,6 +361,7 @@ class ChatViewModel(
                 _uiState.update {
                     it.copy(
                         messages = it.messages.filterNot { msg -> msg.isLoading } + ChatMessage(
+                            id = nextMessageId(),
                             role = "assistant",
                             content = "（已停止本次回答）",
                             isUser = false
@@ -356,6 +374,7 @@ class ChatViewModel(
                 _uiState.update {
                     it.copy(
                         messages = it.messages.filterNot { msg -> msg.isLoading } + ChatMessage(
+                            id = nextMessageId(),
                             role = "error",
                             content = "发送失败: ${e.message}",
                             isUser = false
@@ -380,6 +399,7 @@ class ChatViewModel(
         job?.cancel()
         memory.clear()
         memoryDirty = false
+        lastUserMessage = null
         val threadId = currentThreadId
         _uiState.update { it.copy(messages = emptyList(), error = null, pendingConfirm = null) }
         viewModelScope.launch {
@@ -419,6 +439,7 @@ class ChatViewModel(
     private suspend fun loadThread(threadId: String) = persistenceMutex.withLock {
         val messages = ChatThreadCodec.toMessages(chatMessageDao.getMessages(threadId))
         memory.restoreFrom(messages)
+        lastUserMessage = null
         _uiState.update { it.copy(messages = displayMessages(messages)) }
         memoryDirty = false
     }
@@ -436,12 +457,25 @@ class ChatViewModel(
     private fun displayMessages(messages: List<AiMessage>): List<ChatMessage> =
         messages.mapNotNull { m ->
             when {
-                m.role == "user" -> ChatMessage(role = "user", content = m.content ?: "", isUser = true)
-                m.role == "assistant" && m.toolCalls == null ->
-                    ChatMessage(role = "assistant", content = m.content ?: "", isUser = false)
+                m.role == "user" -> ChatMessage(
+                    id = nextMessageId(), role = "user", content = m.content ?: "", isUser = true
+                )
+                m.role == "assistant" && m.toolCalls == null -> ChatMessage(
+                    id = nextMessageId(), role = "assistant", content = m.content ?: "", isUser = false
+                )
                 else -> null
             }
         }
+
+    /** 重新生成：重发最近一条用户消息（新一轮，旧回复保留可对比；生成中不可触发） */
+    fun regenerateLast() {
+        val msg = lastUserMessage ?: return
+        if (_uiState.value.isProcessing) return
+        sendMessage(msg)
+    }
+
+    /** 错误重试：与重新生成同机制（失败轮的兜底文案留在上下文，模型知晓刚才失败过） */
+    fun retryLast() = regenerateLast()
 
     companion object {
         private const val THREAD_GLOBAL = "global"
