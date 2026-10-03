@@ -11,6 +11,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -119,10 +120,19 @@ fun ChatMessageItem(
                 }
             }
         } else {
+            // 点击仅用于切换思维链展开：仅在确有详情可展开时挂 clickable，且去涟漪
+            // （indication=null）——整条消息可点面积大，按下/长按/滚动起手的矩形波纹很突兀
+            val messageInteraction = remember { MutableInteractionSource() }
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = { if (expandable) expanded = !expanded })
+                    .then(
+                        if (expandable) Modifier.clickable(
+                            interactionSource = messageInteraction,
+                            indication = null,
+                            onClick = { expanded = !expanded }
+                        ) else Modifier
+                    )
             ) {
                 when {
                     isToolCall -> Row(verticalAlignment = Alignment.CenterVertically) {
