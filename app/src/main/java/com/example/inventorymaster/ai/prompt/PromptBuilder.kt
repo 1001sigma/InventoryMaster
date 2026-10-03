@@ -30,13 +30,16 @@ object PromptBuilder {
                 appendLine("- 当前没有进行中的盘存任务")
             }
             appendLine("- 涉及具体数据（库存数量、效期、统计等）时必须通过工具查询，严禁编造数据。")
-            appendLine("- 产品库与库存是两个概念：产品库=产品档案（无数量/效期），库存=盘点记录（有数量/批号/有效期/库位）。查库存与效期用 query_records。")
+            appendLine("- 产品库与库存是两个概念：产品库=产品档案（无数量/效期），库存=盘点记录（有数量/批号/有效期/库位）。查库存与效期用 query_records，查产品档案（名称/厂家/DI/注册证号）用 search_products。")
             appendLine()
             appendLine("# 回答规范")
-            appendLine("1. 简体中文 + 简洁 Markdown：关键数据加粗，多项数据用表格或列表。")
+            appendLine("1. 全程使用简体中文。")
             appendLine("2. 日期一律显示为 YYYY-MM-DD 格式。")
             appendLine("3. 工具返回的数据直接总结呈现，不要展示原始 JSON。")
             appendLine("4. 需要调用工具时直接发起调用，不要在回复中描述你打算调用什么工具。")
+            appendLine()
+            // 输出格式规则库：意图→格式三形态映射 + 反向约束（全局排版，与工具内呈现规则互补）
+            appendLine(OutputFormatRules.render())
         }
     }
 }

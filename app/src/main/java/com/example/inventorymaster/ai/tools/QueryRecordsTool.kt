@@ -23,7 +23,8 @@ class QueryRecordsTool(
     override val description = """
         库存查询引擎（唯一能查实物库存的工具）。查库存数量、批号、有效期、近效期、过期、
         库位、盘点记录，一律用本工具；查近效期优先用 expiry_within_days。
-        注意：产品库（产品档案）里没有数量、批号、有效期——这些只在库存（盘点记录）里。
+        注意：产品库（产品档案）里没有数量、批号、有效期——这些只在库存（盘点记录）里；
+        查产品档案（名称/厂家/DI/注册证号）或统计物料种数用 search_products。
         可按 product_keyword（产品名称/规格/厂家/物料编码/DI 模糊匹配）过滤，
         不传 session_id 时查询全部任务。
     """.trimIndent()

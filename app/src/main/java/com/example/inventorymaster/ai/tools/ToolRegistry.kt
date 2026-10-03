@@ -39,7 +39,7 @@ class ToolRegistry {
         ): ToolRegistry = ToolRegistry().apply {
             register(QueryRecordsTool(repository))
             register(ListSessionsTool(repository))
-            register(GetProductDetailTool(repository))
+            register(SearchProductsTool(repository))
             register(ExecuteUiActionTool())
             register(OcrCorrectTool(aiService))
             register(AnalyzeAbnormalTool(repository, settingsRepository))

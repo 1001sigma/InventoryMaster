@@ -28,6 +28,8 @@ AiService（capabilities 声明 FC/流式）
 - `ai/InventoryAiAgent.kt` — 业务适配（瘦）
 - `ai/memory/ConversationMemory.kt` — 轮次制记忆（裁剪永不拆 tool 配对）+ `restoreFrom`（持久化恢复）+ `ChatThreadCodec`
 - `ai/tools/` — ToolResult/ToolError/ToolValidator + 7 工具 + `ToolPermissionManager`（CONFIRM 名单：execute_ui_action）
+- `ai/prompt/OutputFormatRules.kt` — 输出格式规则库（意图→格式三形态 + 反向约束，全局排版；
+  工具内呈现规则仍在各工具。LaTeX 禁用——渲染器不支持公式）
 
 ## 2. AgentEvent ↔ AiEvent 映射
 
@@ -47,8 +49,10 @@ AiService（capabilities 声明 FC/流式）
 `AiTool.execute(toolCall: AiToolCall): ToolResult`。ToolResult = content（给模型，进 memory）/
 data（给程序）/error（六类 ToolErrorKind）/uiAction（直达 UI，替代已删除的 ActionResultExtractor 字符串协议）。
 
-工具 7 个：query_records（结构化查询，唯一库存入口）、list_sessions、get_product_detail（产品库档案）、
-execute_ui_action（CONFIRM）、ocr_correct、analyze_abnormal、generate_summary。
+工具 7 个：query_records（结构化查询，唯一库存入口）、list_sessions、search_products（产品库唯一
+入口：名称/厂家/DI/物料编码模糊 + 精确 productKey/DI 三级降级，含注册证号/型号全字段与 total 计数；
+2026-10-02 合并原 get_product_detail）、execute_ui_action（CONFIRM）、ocr_correct、
+analyze_abnormal、generate_summary。
 
 铁律：
 - **ToolValidator** 在执行边界校验 required/类型/enum；工具内只做业务校验；错误文案必须可自纠
