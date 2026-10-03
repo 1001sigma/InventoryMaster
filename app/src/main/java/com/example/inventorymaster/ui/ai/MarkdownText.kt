@@ -50,7 +50,8 @@ fun MarkdownText(
                     softWrap = true,
 //                    overflow = TextOverflow.Clip
                 )
-            }
+            },
+            table = { model -> AutoWrapMarkdownTable(model) }
         )
     )
 }

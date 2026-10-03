@@ -65,8 +65,12 @@
 
 ## 已知小项（低优先）
 
-- mikepenz 渲染器（0.28.0）表格无列宽分配——查询输出已改为列表规避；若将来要恢复表格，
-  需自写表格组件或升级渲染器。
+- ~~mikepenz 渲染器（0.28.0）表格无列宽分配~~ **已解决（2026-10-02，两步）**：
+  ① 依赖升级 0.28.0 → 0.31.0（该版本起表格单元格 `weight(1f)` 等分列宽，表头与数据共享列网格，
+  错位消除；App 侧 6 个渲染器 API 逐一核实兼容，Kotlin 2.0.21 无需升级——发布件 @Metadata mv=2.0.0）；
+  ② `ui/ai/AutoWrapMarkdownTable.kt` 经 `markdownComponents(table=...)` 替换默认表格：列宽按
+  TextMeasurer 内容测量后比例分配收进屏宽，单元格自动换行（ChatGPT 风格），仅 ≤8 列生效，
+  更多列退回库默认（固定列宽+横滚）。库默认仍是"每列 160dp 固定 + maxLines=1"。
 - `ai/local/*` 脚手架未接线；端侧路线建议 LiteRT-LM 或局域网 Ollama（见
   `D:\xz\repos\AI Agent\项目分析\` 四份参考项目分析）。
 - 确认流状态在内存（CompletableDeferred），进程被杀确认即丢——knotwork 的

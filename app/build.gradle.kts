@@ -162,5 +162,6 @@ dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
 
     // ========== Markdown 渲染 ==========
-    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.28.0")
+    // 0.31.0 起表格单元格 weight(1f) 等分列宽（0.28.0 的 weight 填充块模型导致表头与数据错位）
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.31.0")
 }
