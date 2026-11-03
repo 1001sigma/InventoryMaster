@@ -27,12 +27,13 @@ class ListSessionsTool(
 
     override suspend fun execute(toolCall: AiToolCall): ToolResult {
         val sessions = repository.getAllSessionsOnce()
-        if (sessions.isEmpty()) return ToolResult.success(toolCall, "系统中暂无盘存任务。")
+        if (sessions.isEmpty()) return ToolResult.success(toolCall, "查询成功，系统中暂无盘存任务。请直接向用户汇报。")
 
         val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val content = sessions.take(MAX_SESSIONS).joinToString("\n") { session ->
+        val listText = sessions.take(MAX_SESSIONS).joinToString("\n") { session ->
             "任务ID: ${session.id} | 名称: ${session.name} | 创建日期: ${formatter.format(Date(session.date))} | 状态: ${statusText(session.status)}"
         } + if (sessions.size > MAX_SESSIONS) "\n[仅显示最近 $MAX_SESSIONS 个，共 ${sessions.size} 个]" else ""
+        val content = "查询成功，当前系统中共有 ${sessions.size} 个盘存任务。明细如下（请直接向用户汇报任务列表）：\n$listText"
         return ToolResult.success(toolCall, content)
     }
 

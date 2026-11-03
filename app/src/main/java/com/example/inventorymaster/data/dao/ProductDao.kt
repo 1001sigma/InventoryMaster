@@ -21,6 +21,14 @@ interface ProductDao {
     @Query("SELECT * FROM product_base WHERE productKey = :productKey")
     suspend fun getProductByKey(productKey: String): ProductBase?
 
+    // 根据 materialCode 查找产品列表（组合键规则下同物料编码可对应多个 DI 产品）
+    @Query("SELECT * FROM product_base WHERE materialCode = :materialCode ORDER BY di ASC")
+    suspend fun getProductsByMaterialCode(materialCode: String): List<ProductBase>
+
+    // 根据 DI 查找产品列表（扫码只带 DI，同 DI 多物料编码时取物料编码升序第一条）
+    @Query("SELECT * FROM product_base WHERE di = :di ORDER BY materialCode ASC")
+    suspend fun getProductsByDi(di: String): List<ProductBase>
+
 
 
     // 4. 模糊搜索产品库
@@ -28,13 +36,17 @@ interface ProductDao {
         SELECT * FROM product_base
         WHERE productName LIKE '%' || :query || '%'
         OR manufacturer LIKE '%' || :query || '%'
-        OR productKey LIKE '%' || :query || '%'
+        OR di LIKE '%' || :query || '%'
+        OR materialCode LIKE '%' || :query || '%'
     """)
     suspend fun searchProducts(query: String): List<ProductBase>
 
     // 5. 获取全部产品 (导出用)
     @Query("SELECT * FROM product_base ORDER BY productName ASC")
     suspend fun getAllProducts(): List<ProductBase>
+
+    @Query("SELECT COUNT(*) FROM product_base")
+    suspend fun getProductCount(): Int
 
     // 6. 删除产品 (按 productKey)
     @Query("DELETE FROM product_base WHERE productKey = :productKey")

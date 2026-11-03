@@ -1,6 +1,9 @@
 package com.example.inventorymaster.ai.runtime
 
 import android.util.Log
+import com.example.inventorymaster.ai.agent.ProductCardListCodec
+import com.example.inventorymaster.ai.agent.UiAction
+import com.example.inventorymaster.ai.agent.UserQuestionAnswer
 import com.example.inventorymaster.ai.agent.strategy.FunctionCallingStrategy
 import com.example.inventorymaster.ai.agent.strategy.JsonToolCallStrategy
 import com.example.inventorymaster.ai.agent.strategy.ToolCallOutcome
@@ -13,6 +16,7 @@ import com.example.inventorymaster.ai.provider.AiServiceException
 import com.example.inventorymaster.ai.provider.AiToolCall
 import com.example.inventorymaster.ai.provider.AiToolDefinition
 import com.example.inventorymaster.ai.provider.StreamChunk
+import com.example.inventorymaster.ai.tools.AskQuestionTool
 import com.example.inventorymaster.ai.tools.ToolErrorKind
 import com.example.inventorymaster.ai.tools.ToolExecutor
 import com.example.inventorymaster.ai.tools.ToolPermission
@@ -26,6 +30,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.withTimeout
+import android.os.SystemClock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -53,15 +58,22 @@ class AiRuntime(
         val maxCallsPerRound: Int = 4,
         val llmTimeoutMs: Long = 90_000,
         val confirmTimeoutMs: Long = 30_000,
+        val questionTimeoutMs: Long = 180_000,
         /** 同工具单调用连续 N 轮截断（4：给合理的参数修正重试留空间） */
         val sameToolStreakLimit: Int = 4
     )
 
     private val pendingConfirms = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+    private val pendingQuestions = ConcurrentHashMap<String, CompletableDeferred<UserQuestionAnswer>>()
 
     /** UI 对 AwaitingConfirmation 的答复 */
     fun respondConfirm(requestId: String, approved: Boolean) {
         pendingConfirms.remove(requestId)?.complete(approved)
+    }
+
+    /** UI 对 AwaitingQuestion 的答复（用户选择或跳过） */
+    fun respondQuestion(requestId: String, answer: UserQuestionAnswer) {
+        pendingQuestions.remove(requestId)?.complete(answer)
     }
 
     /**
@@ -70,6 +82,16 @@ class AiRuntime(
      */
     fun turn(userMessage: String, systemPrompt: String): Flow<AiEvent> = channelFlow {
         memory.openUserTurn(userMessage)
+        val turnStartMs = SystemClock.elapsedRealtime()
+        /** 整轮耗时（毫秒）：从用户消息进轮到最终回答（含工具执行/确认等待），随 Completed 与 memory 落库 */
+        fun elapsedMs(): Long = SystemClock.elapsedRealtime() - turnStartMs
+        // 本轮工具产出的产品卡片 JSON（随最终回复持久化；取消/异常路径不带卡片，与 UI 现场行为一致）
+        var pendingCardJson: String? = null
+        suspend fun finishTurn(answer: String) {
+            val duration = elapsedMs()
+            memory.closeTurn(answer, duration, aiService.modelId, pendingCardJson)
+            send(AiEvent.Completed(answer, duration, aiService.modelId))
+        }
         try {
             val strategy: ToolCallStrategy =
                 if (aiService.capabilities.functionCalling) FunctionCallingStrategy()
@@ -89,7 +111,7 @@ class AiRuntime(
                     callModelRound({ send(it) }, sysPrompt, toolDefs, useTools)
                 } catch (e: TimeoutCancellationException) {
                     throw AiServiceException(
-                        AiErrorKind.TIMEOUT, "AI 响应超时（${policies.llmTimeoutMs / 1000} 秒）", e
+                        AiErrorKind.TIMEOUT, "AI 响应超时（${aiService.chatTimeoutMs / 1000} 秒）", e
                     )
                 }
 
@@ -98,16 +120,14 @@ class AiRuntime(
 
                 when (outcome) {
                     is ToolCallOutcome.FinalAnswer -> {
-                        memory.closeTurn(outcome.content)
-                        send(AiEvent.Completed(outcome.content))
+                        finishTurn(outcome.content)
                         return@channelFlow
                     }
 
                     is ToolCallOutcome.MalformedJson -> {
                         // JSON 协议下模型想调工具但输出不合法：纠正重试一次，再失败按普通回答展示
                         if (jsonRetryUsed) {
-                            memory.closeTurn(outcome.raw)
-                            send(AiEvent.Completed(outcome.raw))
+                            finishTurn(outcome.raw)
                             return@channelFlow
                         }
                         jsonRetryUsed = true
@@ -128,9 +148,7 @@ class AiRuntime(
                         val signature = calls.joinToString(";") { it.name + ":" + normalizeArgs(it.arguments) }
                         if (signature == lastSignature) {
                             Log.w(TAG, "检测到完全相同的工具调用重复，截断")
-                            val msg = "查询过程陷入循环，已中止。请换一种问法试试。"
-                            memory.closeTurn(msg)
-                            send(AiEvent.Completed(msg))
+                            finishTurn("查询过程陷入循环，已中止。请换一种问法试试。")
                             return@channelFlow
                         }
                         lastSignature = signature
@@ -147,15 +165,13 @@ class AiRuntime(
                         }
                         if (sameToolStreak >= policies.sameToolStreakLimit) {
                             Log.w(TAG, "工具 $lastSingleToolName 连续调用 $sameToolStreak 轮，截断")
-                            val msg = "同一查询连续执行多次未得出结论，已中止。请换一种问法或缩小查询范围。"
-                            memory.closeTurn(msg)
-                            send(AiEvent.Completed(msg))
+                            finishTurn("同一查询连续执行多次未得出结论，已中止。请换一种问法或缩小查询范围。")
                             return@channelFlow
                         }
 
                         memory.appendAssistantToolCalls(response.content.ifBlank { null }, calls)
-                        // 思维链：模型在工具轮的思考/说明文本（FC 模型常为空，有则下发折叠展示）
-                        if (response.content.isNotBlank()) {
+                        // 思维链：仅 FC 模型有独立思考文本（JSON 模式下 content 为信封原文，严禁外显，铁律④）
+                        if (aiService.capabilities.functionCalling && response.content.isNotBlank()) {
                             send(AiEvent.ThinkingText(response.content.trim()))
                         }
 
@@ -163,6 +179,32 @@ class AiRuntime(
                         val results = mutableMapOf<String, ToolResult>()
                         try {
                             for (call in calls) {
+                                if (call.name == "ask_question") {
+                                    send(AiEvent.ToolCallStarted(call))
+                                    val questions = AskQuestionTool.parseQuestions(call.arguments)
+                                    if (questions.isEmpty()) {
+                                        results[call.id] = ToolResult.failure(
+                                            call,
+                                            ToolErrorKind.INVALID_ARGUMENTS,
+                                            "调用 ask_question 失败：缺少有效的问题列表。"
+                                        )
+                                    } else {
+                                        val answer = requestQuestion({ send(it) }, call)
+                                        val result = if (answer.isSkipped) {
+                                            ToolResult.success(call, "用户跳过了此问题，未做选择。请按照常规安全策略继续，或询问是否需要其他帮助。")
+                                        } else {
+                                            val formattedAnswers = answer.selectedOptions.entries.joinToString("\n") { (idx, selected) ->
+                                                val qTitle = questions.getOrNull(idx)?.question ?: "第${idx + 1}题"
+                                                "问题【$qTitle】用户的最终选择与补充要求：${selected.joinToString("，")}"
+                                            }
+                                            ToolResult.success(call, "用户已在交互卡片上完成作答：\n$formattedAnswers\n请务必严格根据用户的选择与补充要求，继续执行下一步查询或操作。")
+                                        }
+                                        results[call.id] = result
+                                    }
+                                    send(AiEvent.ToolCallFinished(call, results[call.id]!!))
+                                    continue
+                                }
+
                                 when (ToolPermissionManager.check(call.name)) {
                                     ToolPermission.BLOCKED -> {
                                         results[call.id] = ToolResult.failure(
@@ -193,7 +235,13 @@ class AiRuntime(
                         }
 
                         for (call in calls) {
-                            results[call.id]?.uiAction?.let { send(AiEvent.ActionAvailable(it)) }
+                            results[call.id]?.uiAction?.let {
+                                send(AiEvent.ActionAvailable(it))
+                                // 产品卡片随最终回复持久化（多次产出时最后一次为准，与 UI 持卡语义一致）
+                                if (it is UiAction.ShowProductCardList) {
+                                    pendingCardJson = ProductCardListCodec.toJson(it)
+                                }
+                            }
                         }
                     }
                 }
@@ -201,26 +249,26 @@ class AiRuntime(
 
             // 轮次耗尽：不带工具做一次总结性回答（同样走流式，总结文本实时外显）
             val finalResponse = callModelRound({ send(it) }, sysPrompt, toolDefs, useTools = false)
-            memory.closeTurn(finalResponse.content)
-            send(AiEvent.Completed(finalResponse.content))
+            finishTurn(finalResponse.content)
         } catch (e: CancellationException) {
             // 用户停止 / 页面退出：补齐轮次，保持 memory 序列合法
-            memory.closeTurn("（本次回答已停止）")
+            memory.closeTurn("（本次回答已停止）", elapsedMs(), aiService.modelId)
             throw e
         } catch (e: AiServiceException) {
             Log.e(TAG, "Chat failed (${e.kind})", e)
-            memory.closeTurn("服务暂时不可用：${e.message}")
+            memory.closeTurn("服务暂时不可用：${e.message}", elapsedMs(), aiService.modelId)
             send(AiEvent.Failed(e))
         } catch (e: Exception) {
             Log.e(TAG, "Chat failed", e)
-            memory.closeTurn("抱歉，处理请求时出错：${e.message}")
+            memory.closeTurn("抱歉，处理请求时出错：${e.message}", elapsedMs(), aiService.modelId)
             send(AiEvent.Failed(AiServiceException(AiErrorKind.UNKNOWN, "AI 服务出错: ${e.message}", e)))
         }
     }
 
     /**
-     * 单轮模型调用。支持流式的服务商走 streamChat：文本增量实时下发（AnswerDelta，
-     * 仅 FC 能力模型——JSON 协议正文可能是工具信封，不外泄），
+     * 单轮模型调用。支持流式的服务商走 streamChat：文本增量实时下发 AnswerDelta——
+     * FC 模型直接外显；JSON 协议（FC=false）正文可能是工具信封，严禁流式外泄，
+     * 待抽取或完成后整体交付（铁律④）。
      * 工具调用分片由 [ToolCallAccumulator] 聚合（docs/AI_V3_REDESIGN.md §4.8）。
      * 流式空结果（既无文本也无分片）降级为一次非流式调用。
      */
@@ -233,16 +281,34 @@ class AiRuntime(
         val tools = if (useTools) toolDefs else null
         val messages = memory.messagesForRequest()
         if (!aiService.capabilities.streaming) {
-            return withTimeout(policies.llmTimeoutMs) { aiService.chat(messages, systemPrompt, tools) }
+            return withTimeout(aiService.chatTimeoutMs) { aiService.chat(messages, systemPrompt, tools) }
         }
         val content = StringBuilder()
         val accumulator = ToolCallAccumulator()
-        withTimeout(policies.llmTimeoutMs) {
+        var suppressDelta: Boolean? = if (aiService.capabilities.functionCalling) false else null
+        val bufferedDeltas = StringBuilder()
+
+        withTimeout(aiService.chatTimeoutMs) {
             aiService.streamChat(messages, systemPrompt, tools).collect { chunk ->
                 when (chunk) {
                     is StreamChunk.Text -> {
                         content.append(chunk.text)
-                        if (aiService.capabilities.functionCalling) send(AiEvent.AnswerDelta(chunk.text))
+                        if (suppressDelta == null) {
+                            bufferedDeltas.append(chunk.text)
+                            val trimmed = bufferedDeltas.trimStart()
+                            if (trimmed.isNotEmpty()) {
+                                if (trimmed.startsWith("{") || trimmed.startsWith("```") || trimmed.startsWith("<|")) {
+                                    suppressDelta = true
+                                    bufferedDeltas.clear()
+                                } else {
+                                    suppressDelta = false
+                                    send(AiEvent.AnswerDelta(bufferedDeltas.toString()))
+                                    bufferedDeltas.clear()
+                                }
+                            }
+                        } else if (!suppressDelta) {
+                            send(AiEvent.AnswerDelta(chunk.text))
+                        }
                     }
                     is StreamChunk.ToolCallDelta -> accumulator.add(chunk)
                     is StreamChunk.Completed -> Unit
@@ -251,7 +317,7 @@ class AiRuntime(
             }
         }
         if (content.isBlank() && accumulator.isEmpty()) {
-            return withTimeout(policies.llmTimeoutMs) { aiService.chat(messages, systemPrompt, tools) }
+            return withTimeout(aiService.chatTimeoutMs) { aiService.chat(messages, systemPrompt, tools) }
         }
         val toolCalls = accumulator.toToolCalls()
         return AiResponse(content = content.toString(), toolCalls = toolCalls.takeIf { it.isNotEmpty() })
@@ -273,6 +339,26 @@ class AiRuntime(
             return false
         } finally {
             pendingConfirms.remove(requestId)
+        }
+    }
+
+    /** ask_question 工具：发事件等 UI 用户答复或跳过，超时自动按跳过处理 */
+    private suspend fun requestQuestion(
+        send: suspend (AiEvent) -> Unit,
+        call: AiToolCall
+    ): UserQuestionAnswer {
+        val requestId = UUID.randomUUID().toString()
+        val deferred = CompletableDeferred<UserQuestionAnswer>()
+        pendingQuestions[requestId] = deferred
+        val questions = AskQuestionTool.parseQuestions(call.arguments)
+        try {
+            send(AiEvent.AwaitingQuestion(requestId, questions))
+            return withTimeout(policies.questionTimeoutMs) { deferred.await() }
+        } catch (e: TimeoutCancellationException) {
+            send(AiEvent.QuestionTimedOut(requestId))
+            return UserQuestionAnswer(isSkipped = true)
+        } finally {
+            pendingQuestions.remove(requestId)
         }
     }
 

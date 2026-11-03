@@ -36,15 +36,26 @@ interface SessionDao {
     @Query("UPDATE inventory_sessions SET status = :newStatus WHERE id = :sessionId")
     suspend fun updateStatus(sessionId: Long, newStatus: Int)
 
+    // 服务端任务开始时间落库（增量拉取/门铃刷新时对齐服务端状态机；只在非空时调用）
+    @Query("UPDATE inventory_sessions SET startedAt = :startedAt WHERE id = :sessionId")
+    suspend fun updateStartedAt(sessionId: Long, startedAt: Long)
+
     @Query("""
     SELECT 
         s.*,
         (SELECT COUNT(*) FROM stock_records WHERE sessionId = s.id) as totalCount,
-        (SELECT COUNT(*) FROM stock_records WHERE sessionId = s.id AND remarks LIKE '%已查验%') as verifiedCount
+        (SELECT COUNT(*) FROM stock_records WHERE sessionId = s.id AND (is_verified = 1 OR actualQuantity IS NOT NULL)) as verifiedCount
     FROM inventory_sessions s
     ORDER BY s.date DESC
 """)
     fun getAllSessionsWithProgress(): Flow<List<SessionWithProgress>>
+
+    @Query("SELECT COUNT(*) FROM inventory_sessions")
+    suspend fun getSessionCount(): Int
+
+    // 进行中任务计数（status: 0=进行中, 1=已归档, 2=已锁定）——产品库修改守卫用
+    @Query("SELECT COUNT(*) FROM inventory_sessions WHERE status = 0")
+    suspend fun countOngoingSessions(): Int
 
     //[新增] 删除任务 (级联删除会在 Entity 定义 ForeignKey 时处理，或者手动删)
     @androidx.room.Delete

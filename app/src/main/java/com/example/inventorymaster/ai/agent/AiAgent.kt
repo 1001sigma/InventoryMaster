@@ -26,9 +26,22 @@ sealed class AgentEvent {
     /** CONFIRM 等待超时（按拒绝处理）：UI 关闭对应确认弹窗，避免"弹窗挂着但已失效" */
     data class ConfirmTimedOut(val requestId: String) : AgentEvent()
 
+    /** ask_question 工具：等待用户在卡片上作答或跳过（requestId 经 respondQuestion 回传） */
+    data class QuestionRequired(
+        val requestId: String,
+        val questions: List<QuestionItem>
+    ) : AgentEvent()
+
+    /** ask_question 等待超时：UI 自动收起问答卡片 */
+    data class QuestionTimedOut(val requestId: String) : AgentEvent()
+
     data class Response(
         val content: String,
-        val cardAction: UiAction.ShowProductCardList? = null
+        val cardAction: UiAction.ShowProductCardList? = null,
+        /** 整轮耗时（毫秒，操作条展示）；null=未统计 */
+        val durationMs: Long? = null,
+        /** 生成该回复的模型 ID（随消息持久化，操作条展示）；null=未统计/旧数据 */
+        val model: String? = null
     ) : AgentEvent()
     data class ResponseChunk(val content: String) : AgentEvent()
     data class Error(val message: String, val kind: AiErrorKind? = null) : AgentEvent()

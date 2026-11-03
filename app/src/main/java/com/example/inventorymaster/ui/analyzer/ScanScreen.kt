@@ -18,52 +18,68 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.animation.core.LinearEasing
+import com.example.inventorymaster.ui.analyzer.multiscan.DetectedBarcode
+import com.example.inventorymaster.ui.analyzer.multiscan.FrozenSelectionOverlay
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.CenterFocusWeak
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.UploadFile
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import com.example.inventorymaster.ui.components.ModernAlertDialog
+import com.example.inventorymaster.ui.components.ModernDialogButtonBar
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.ImageVector
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -77,15 +93,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -93,7 +102,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -103,13 +111,11 @@ import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.UserSettings
 import com.example.inventorymaster.ui.theme.DarkBackground
 import com.example.inventorymaster.ui.theme.DarkSurfaceVariant
-import com.example.inventorymaster.ui.theme.ScannerCorner
-import com.example.inventorymaster.ui.theme.ScannerLine
 import com.example.inventorymaster.ui.theme.StatusSuccess
-import com.example.inventorymaster.utils.JiebaUtils
-import com.example.inventorymaster.utils.RecognitionUtils
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.Text
+import com.example.inventorymaster.ocr.OcrResult
+import com.example.inventorymaster.utils.QrScanner
+import com.example.inventorymaster.utils.toBitmap
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -130,25 +136,36 @@ fun ScanScreen(
     val isSimpleMode = userSettings.isSimpleMode
     val showOcrMask = userSettings.showOcrMask
     val enableMultiScan = userSettings.enableMultiScan
-    val barcodeFrameW = userSettings.barcodeFrameWidth
-    val barcodeFrameH = userSettings.barcodeFrameHeight
-    val ocrFrameW = userSettings.ocrFrameWidth
-    val ocrFrameH = userSettings.ocrFrameHeight
+    val scanFrameRatioW = userSettings.scanFrameRatioW
+    val scanFrameRatioH = userSettings.scanFrameRatioH
+    val ocrFrameRatioW = userSettings.ocrFrameRatioW
+    val ocrFrameRatioH = userSettings.ocrFrameRatioH
 
     // --- 2. 状态管理 ---
     var scanMode by remember { mutableIntStateOf(0) } // 0 = 扫码, 1 = 识字
     var isTorchOn by remember { mutableStateOf(false) }
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
 
+    // 拖拽调整扫描框期间暂停帧分析
+    var isResizing by remember { mutableStateOf(false) }
+
     // [新增] 保存 PreviewView 的引用
     var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
     // 相机执行器 (用于分析线程)
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
 
-    // 结果状态
-    var rawOcrResult by remember { mutableStateOf<Text?>(null) }
+    // OCR ViewModel
+    val ocrViewModel = viewModel<OcrViewModel>()
+    val ocrResult by ocrViewModel.ocrResult.collectAsState()
+    val tokenizedWords by ocrViewModel.tokenizedWords.collectAsState()
+
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showRestartTipDialog by remember { mutableStateOf(false) }
+    var showHistorySheet by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        ScanHistoryManager.init(context)
+    }
 
     // 多码模式状态 (定格)
     var frozenBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -167,8 +184,8 @@ fun ScanScreen(
 
     // --- 3. 分析器组装 (Analyzer Assembly) ---
 
-    // A. 预先构建 ImageAnalysis UseCase (关键：配置高分辨率)
-    val targetResolution = remember { android.util.Size(1280, 720) }
+    // A. 预先构建 ImageAnalysis UseCase (关键：升级至 1080p 高分辨率，显著提高小 DataMatrix 识别率)
+    val targetResolution = remember { android.util.Size(1920, 1080) }
 
     // A. 预先构建 ImageAnalysis
     val imageAnalysis = remember {
@@ -178,15 +195,14 @@ fun ScanScreen(
             .build()
     }
 
-    // ==================== 替换区域开始 ====================
-
-    // B. 实例化重构后的 BarcodeAnalyzer
-    // 在 ScanScreen.kt 里面找到这段并替换：
+    // B. 实例化重构后的 BarcodeAnalyzer（单例复用，支持多码稳定定格与 1:1 抓帧）
     val barcodeAnalyzer = remember(enableMultiScan) {
         BarcodeAnalyzer(
             isMultiMode = enableMultiScan,
             scope = scope,
+            getPreviewBitmap = { previewViewRef?.bitmap },
             onScanResult = { result ->
+                ScanHistoryManager.addRecord(context, result, ScanRecordType.BARCODE)
                 scope.launch { onScanResult(result) }
             },
             onMultiScanResult = { bitmap, barcodes ->
@@ -195,30 +211,36 @@ fun ScanScreen(
             }
         )
     }
+    DisposableEffect(barcodeAnalyzer) {
+        onDispose { barcodeAnalyzer.close() }
+    }
 
     // D. 核心调度逻辑：在每帧图像进来时，动态计算精准坐标并分发给对应的分析器
     val density = LocalDensity.current
     var viewWidthPx by remember { mutableFloatStateOf(0f) }
     var viewHeightPx by remember { mutableFloatStateOf(0f) }
 
-    val barcodeFrameWPx = with(density) { barcodeFrameW.dp.toPx() }
-    val barcodeFrameHPx = with(density) { barcodeFrameH.dp.toPx() }
-    val ocrFrameWPx = with(density) { ocrFrameW.dp.toPx() }
-    val ocrFrameHPx = with(density) { ocrFrameH.dp.toPx() }
+    // OCR 快门裁剪用的框像素尺寸（条码框在分析器内逐帧实时读取比例）
+    val ocrFrameWPx = if (viewWidthPx > 0f && ocrFrameRatioW > 0f) {
+        viewWidthPx * ocrFrameRatioW
+    } else {
+        with(density) { 300.dp.toPx() }
+    }
+    val ocrFrameHPx = if (viewHeightPx > 0f && ocrFrameRatioH > 0f) {
+        viewHeightPx * ocrFrameRatioH
+    } else {
+        with(density) { 80.dp.toPx() }
+    }
 
-    LaunchedEffect(scanMode,
-        frozenBitmap,
-        viewWidthPx,
-        viewHeightPx,
-        barcodeFrameWPx, // 加上这个
-        barcodeFrameHPx
-        ) {
+    // 分析器只随模式/定格切换重建。扫描框比例与容器尺寸都在帧内实时读取（委托状态），
+    // 拖拽调整扫描框后下一帧自动生效，无需重启分析器
+    LaunchedEffect(scanMode, frozenBitmap) {
         if (frozenBitmap != null) {
             imageAnalysis.clearAnalyzer()
         } else {
             imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                // 如果当前是识字模式，底层分析器直接罢工休息，省 CPU！
-                if (scanMode == 1) {
+                // 识字模式或拖拽调整扫描框期间，底层分析器直接罢工休息，省 CPU！
+                if (scanMode == 1 || isResizing) {
                     imageProxy.close()
                     return@setAnalyzer
                 }
@@ -230,17 +252,38 @@ fun ScanScreen(
                 val imgW = if (isRotated) cropRect.height() else cropRect.width()
                 val imgH = if (isRotated) cropRect.width() else cropRect.height()
 
-                // 条码扫描框的映射逻辑（这部分保留，因为条码依然需要底层扫描）
-                val mappedRect = ScanRegionMapper.getMappedRect( // ⚠️ 注意：如果你把 ScanRegionMapper 删了，这里可以不传 mappedRect，直接扫全图，或者自己单独留一个简易的 BarcodeMapper
-                    frameWidthPx = barcodeFrameWPx,
-                    frameHeightPx = barcodeFrameHPx,
-                    viewWidthPx = viewWidthPx,
-                    viewHeightPx = viewHeightPx,
-                    imageWidth = imgW,
-                    imageHeight = imgH
-                )
+                // 扫描框像素尺寸 = 容器尺寸 × 记忆比例（未设置时用默认 260dp）
+                val frameWPx = if (viewWidthPx > 0f && userSettings.scanFrameRatioW > 0f) {
+                    viewWidthPx * userSettings.scanFrameRatioW
+                } else {
+                    with(density) { 260.dp.toPx() }
+                }
+                val frameHPx = if (viewHeightPx > 0f && userSettings.scanFrameRatioH > 0f) {
+                    viewHeightPx * userSettings.scanFrameRatioH
+                } else {
+                    with(density) { 260.dp.toPx() }
+                }
+
+                // 条码扫描框的映射逻辑：
+                // 开启多码选择模式时放开全画幅识别，避免框外周边多码被提前误杀；单码模式保留框内对准判定
+                val mappedRect = if (enableMultiScan) {
+                    null
+                } else {
+                    ScanRegionMapper.getMappedRect(
+                        frameWidthPx = frameWPx,
+                        frameHeightPx = frameHPx,
+                        viewWidthPx = viewWidthPx,
+                        viewHeightPx = viewHeightPx,
+                        imageWidth = imgW,
+                        imageHeight = imgH
+                    )
+                }
 
                 barcodeAnalyzer.targetRegion = mappedRect
+                barcodeAnalyzer.viewWidth = viewWidthPx
+                barcodeAnalyzer.viewHeight = viewHeightPx
+                barcodeAnalyzer.imageWidth = imgW.toFloat()
+                barcodeAnalyzer.imageHeight = imgH.toFloat()
                 barcodeAnalyzer.analyze(imageProxy)
             }
         }
@@ -250,13 +293,20 @@ fun ScanScreen(
     // --- 4. 辅助功能 Launcher (相册 & 词库导入) ---
     val importDictLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
-            scope.launch {
-                try {
-                    JiebaUtils.updateDict(context, uri)
+            ocrViewModel.importDictionary(uri)
+        }
+    }
+
+    // 收集词典导入一次性事件
+    LaunchedEffect(Unit) {
+        ocrViewModel.uiEvent.collect { event ->
+            when (event) {
+                is OcrViewModel.UiEvent.DictImportSuccess -> {
                     showSettingsDialog = false
                     showRestartTipDialog = true
-                } catch (e: Exception) {
-                    Toast.makeText(context, "导入失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+                is OcrViewModel.UiEvent.DictImportError -> {
+                    Toast.makeText(context, "导入失败: ${event.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -264,13 +314,20 @@ fun ScanScreen(
 
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
-            val inputImage = RecognitionUtils.imageFromUri(context, uri)
-            if (inputImage != null) {
-                if (scanMode == 0) {
-                    RecognitionUtils.recognizeQRCode(inputImage, { onScanResult(it) }, {})
-                } else {
-                    RecognitionUtils.recognizeText(inputImage, { rawOcrResult = it }, {})
+            if (scanMode == 0) {
+                // 条码模式：统一解码门面全链（ML Kit → libdmtx）
+                scope.launch {
+                    val bitmap = uri.toBitmap(context)
+                    val value = bitmap?.let { QrScanner.recognizeQRCode(it) }
+                    if (value != null) {
+                        ScanHistoryManager.addRecord(context, value, ScanRecordType.BARCODE)
+                        onScanResult(value)
+                    }
+                    bitmap?.recycle()
                 }
+            } else {
+                // OCR 模式：用 OcrViewModel
+                ocrViewModel.recognizeFromUri(uri)
             }
         }
     }
@@ -334,157 +391,306 @@ fun ScanScreen(
                     barcodes = frozenBarcodes,
                     onBarcodeClick = { code ->
                         frozenBitmap = null // 释放图片
+                        ScanHistoryManager.addRecord(context, code, ScanRecordType.BARCODE)
                         onScanResult(code)
                     },
                     onCancel = {
                         frozenBitmap = null // 取消定格，相机自动恢复分析
                         frozenBarcodes = emptyList()
+                        barcodeAnalyzer.resetAggregator()
                     }
                 )
             } else {
-                // 正常扫描框
-                ScanOverlay(
-                    windowWidth = barcodeFrameW.dp,
-                    windowHeight = barcodeFrameH.dp,
-                    isAnimating = true,
-                    showMask = true
+                // 极简纯白可拖拽扫码框（无扫描线，纯白清爽角标）
+                ResizableScanOverlay(
+                    ratioW = scanFrameRatioW,
+                    ratioH = scanFrameRatioH,
+                    defaultWidth = 260.dp,
+                    defaultHeight = 260.dp,
+                    cornerColor = Color.White,
+                    handleColor = Color.White,
+                    hintText = if (enableMultiScan) "多码选择中 · 对准条码自动收集" else "对准条码 / 二维码，自动识别",
+                    onResizeStart = { isResizing = true },
+                    onResizeEnd = { w, h ->
+                        isResizing = false
+                        scope.launch { settingsRepo.updateScanFrameRatio(w, h) }
+                    }
                 )
             }
         } else {
             // === OCR 模式 ===
             if (showOcrMask) {
-                ScanOverlay(
-                    windowWidth = ocrFrameW.dp,
-                    windowHeight = ocrFrameH.dp,
-                    isAnimating = false,
-                    showMask = true,
-                    cornerColor = Color.White
+                ResizableScanOverlay(
+                    ratioW = ocrFrameRatioW,
+                    ratioH = ocrFrameRatioH,
+                    defaultWidth = 300.dp,
+                    defaultHeight = 80.dp,
+                    cornerColor = Color.White,
+                    handleColor = Color.White,
+                    hintText = "对准文字区域，点击拍摄",
+                    onResizeStart = { isResizing = true },
+                    onResizeEnd = { w, h ->
+                        isResizing = false
+                        scope.launch { settingsRepo.updateOcrFrameRatio(w, h) }
+                    }
                 )
             }
         }
 
-        // C. 顶部控制栏
+        // C. 顶部控制栏 (毛玻璃圆钮 + 状态栏避让)
         if (frozenBitmap == null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 40.dp, start = 16.dp, end = 16.dp)
+                    .statusBarsPadding()
+                    .padding(top = 12.dp, start = 16.dp, end = 16.dp)
                     .align(Alignment.TopCenter),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = MaterialTheme.colorScheme.onBackground)
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier
+                        .size(42.dp)
+                        .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                        .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
                 }
-                Row {
-                    IconButton(onClick = {
-                        isTorchOn = !isTorchOn
-                        cameraControl?.enableTorch(isTorchOn)
-                    }) {
-                        Icon(if (isTorchOn) Icons.Default.FlashOn else Icons.Default.FlashOff, "Torch", tint = MaterialTheme.colorScheme.onBackground)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    IconButton(
+                        onClick = {
+                            isTorchOn = !isTorchOn
+                            cameraControl?.enableTorch(isTorchOn)
+                        },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(
+                                if (isTorchOn) Color(0xFFF59E0B).copy(alpha = 0.9f) else Color.Black.copy(alpha = 0.35f),
+                                CircleShape
+                            )
+                            .border(
+                                1.dp,
+                                if (isTorchOn) Color(0xFFFBBF24) else Color.White.copy(alpha = 0.15f),
+                                CircleShape
+                            )
+                    ) {
+                        Icon(
+                            if (isTorchOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                            contentDescription = "Torch",
+                            tint = if (isTorchOn) Color.Black else Color.White
+                        )
                     }
-                    IconButton(onClick = { showSettingsDialog = true }) {
-                        Icon(Icons.Default.Settings, "Settings", tint = MaterialTheme.colorScheme.onBackground)
+                    IconButton(
+                        onClick = { showSettingsDialog = true },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+                    ) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
                     }
                 }
             }
         }
 
-        // D. 底部操作栏
+        // D. 底部操作栏 (平滑上下渐变 + 胶囊Tab + 三合一动作栏)
         if (frozenBitmap == null) {
+            val bottomGradient = remember {
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        Color.Black.copy(alpha = 0.45f),
+                        Color.Black.copy(alpha = 0.85f)
+                    )
+                )
+            }
+            val historyList by ScanHistoryManager.historyFlow.collectAsState()
+
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .background(DarkBackground.copy(alpha = 0.6f))
-                    .padding(bottom = 30.dp, top = 20.dp),
+                    .background(bottomGradient)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp, top = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 模式切换
-                Row(modifier = Modifier.padding(bottom = 20.dp)) {
-                    ModeButton("扫一扫", scanMode == 0) { scanMode = 0 }
-                    Spacer(modifier = Modifier.width(32.dp))
-                    ModeButton("识文字", scanMode == 1) { scanMode = 1 }
-                }
+                // 模式切换胶囊
+                ScanModeCapsule(
+                    scanMode = scanMode,
+                    onModeChange = { scanMode = it }
+                )
 
-                // 核心控制区
+                // 核心控制区 (相册 | 识别状态/快门 | 识别历史)
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 40.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 36.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // 相册
+                    // 1. 左侧：相册
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         IconButton(
                             onClick = { galleryLauncher.launch("image/*") },
-                            modifier = Modifier.size(48.dp).background(DarkSurfaceVariant, CircleShape)
-                        ) { Icon(Icons.Default.Image, "Gallery", tint = MaterialTheme.colorScheme.onSurface) }
-                        Text("相册", color = MaterialTheme.colorScheme.onBackground, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
-                    }
-
-                    // 快门键
-                    Box(contentAlignment = Alignment.Center) {
-                        Box(modifier = Modifier.size(72.dp).border(4.dp, MaterialTheme.colorScheme.onBackground, CircleShape))
-                        if (scanMode == 0) {
-                            Box(modifier = Modifier.size(56.dp).background(MaterialTheme.colorScheme.onBackground.copy(alpha = 0.2f), CircleShape))
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .background(MaterialTheme.colorScheme.onBackground, CircleShape)
-                                    .clickable { // 【替换逻辑】使用方案 2：PreviewView 直接截图法
-                                        previewViewRef?.bitmap?.let { screenBitmap ->
-                                            // 1. 获取当前设置里的扫描框真实像素
-                                            val frameWPx = with(density) { ocrFrameW.dp.toPx() }
-                                            val frameHPx = with(density) { ocrFrameH.dp.toPx() }
-
-                                            // 2. 因为你的 UI 遮罩是绝对居中的，数学逻辑极其简单：
-                                            val left = ((screenBitmap.width - frameWPx) / 2).toInt().coerceAtLeast(0)
-                                            val top = ((screenBitmap.height - frameHPx) / 2).toInt().coerceAtLeast(0)
-                                            val width = frameWPx.toInt().coerceAtMost(screenBitmap.width - left)
-                                            val height = frameHPx.toInt().coerceAtMost(screenBitmap.height - top)
-
-                                            try {
-                                                // 3. 暴力切图：屏幕上看到什么，就切什么
-                                                val croppedBmp = Bitmap.createBitmap(screenBitmap, left, top, width, height)
-                                                val inputImage = InputImage.fromBitmap(croppedBmp, 0)
-
-                                                // 4. 直接喂给 OCR 工具类
-                                                RecognitionUtils.recognizeText(
-                                                    image = inputImage,
-                                                    onSuccess = { result ->
-                                                        if (result.text.isNotBlank()) {
-                                                            rawOcrResult = result
-                                                        } else {
-                                                            Toast.makeText(context, "未识别到文字", Toast.LENGTH_SHORT).show()
-                                                        }
-                                                    },
-                                                    onFailure = { e ->
-                                                        Toast.makeText(context, "识别出错: ${e.message}", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                )
-                                            } catch (e: Exception) {
-                                                e.printStackTrace()
-                                            }
-                                        }
-                                    }
+                            modifier = Modifier
+                                .size(50.dp)
+                                .background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                                .border(1.dp, Color.White.copy(alpha = 0.2f), CircleShape)
+                        ) {
+                            Icon(
+                                Icons.Default.Image,
+                                contentDescription = "相册",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
                             )
                         }
+                        Text(
+                            text = "相册",
+                            color = Color.White.copy(alpha = 0.85f),
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
                     }
-                    Spacer(modifier = Modifier.size(48.dp)) // 占位保持平衡
+
+                    // 2. 中间：核心动态区
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(76.dp)
+                    ) {
+                        if (scanMode == 0) {
+                            // 扫码模式：精致微光自动识别指示（彻底告别死板假快门）
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(50.dp)
+                                        .background(Color.White.copy(alpha = 0.12f), CircleShape)
+                                        .border(1.dp, Color.White.copy(alpha = 0.25f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.CenterFocusWeak,
+                                        contentDescription = "自动识别中",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
+                                Text(
+                                    text = "自动识别",
+                                    color = Color.White.copy(alpha = 0.7f),
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        } else {
+                            // 识字模式：可触控的纯白相机快门按键
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(62.dp)
+                                        .border(3.5.dp, Color.White, CircleShape)
+                                        .clickable {
+                                            previewViewRef?.bitmap?.let { screenBitmap ->
+                                                val frameWPx = ocrFrameWPx
+                                                val frameHPx = ocrFrameHPx
+                                                val left = ((screenBitmap.width - frameWPx) / 2).toInt().coerceAtLeast(0)
+                                                val top = ((screenBitmap.height - frameHPx) / 2).toInt().coerceAtLeast(0)
+                                                val width = frameWPx.toInt().coerceAtMost(screenBitmap.width - left)
+                                                val height = frameHPx.toInt().coerceAtMost(screenBitmap.height - top)
+                                                try {
+                                                    val croppedBmp = Bitmap.createBitmap(screenBitmap, left, top, width, height)
+                                                    ocrViewModel.recognizeFromBitmap(croppedBmp)
+                                                } catch (e: Exception) {
+                                                    e.printStackTrace()
+                                                }
+                                            }
+                                        }
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .background(Color.White, CircleShape)
+                                    )
+                                }
+                                Text(
+                                    text = "点击拍摄",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // 3. 右侧：识别历史记录 (带数量角标)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box {
+                            IconButton(
+                                onClick = { showHistorySheet = true },
+                                modifier = Modifier
+                                    .size(50.dp)
+                                    .background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                                    .border(1.dp, Color.White.copy(alpha = 0.2f), CircleShape)
+                            ) {
+                                Icon(
+                                    Icons.Default.History,
+                                    contentDescription = "识别历史",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            if (historyList.isNotEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .offset(x = 3.dp, y = (-2).dp)
+                                        .background(MaterialTheme.colorScheme.primary, CircleShape)
+                                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                                ) {
+                                    Text(
+                                        text = if (historyList.size > 99) "99+" else historyList.size.toString(),
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            text = "识别历史",
+                            color = Color.White.copy(alpha = 0.85f),
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
                 }
             }
         }
 
         // E. 弹窗处理
-        if (rawOcrResult != null) {
+        if (ocrResult != null && ocrResult is OcrResult.Success) {
             WordSelectionSheet(
-                rawText = rawOcrResult!!,
-                onDismiss = { rawOcrResult = null },
+                rawText = (ocrResult as OcrResult.Success).ocrText,
+                tokenizedWords = tokenizedWords,
+                onDismiss = { ocrViewModel.clearResult() },
                 onConfirm = { text ->
+                    ScanHistoryManager.addRecord(context, text, ScanRecordType.OCR)
                     onScanResult(text)
-                    rawOcrResult = null
-                },
-                isSimpleMode = isSimpleMode
+                    ocrViewModel.clearResult()
+                }
+            )
+        }
+
+        if (showHistorySheet) {
+            ScanHistorySheet(
+                onDismiss = { showHistorySheet = false },
+                onSelectRecord = { text ->
+                    showHistorySheet = false
+                    onScanResult(text)
+                }
             )
         }
 
@@ -510,19 +716,66 @@ fun ScanScreen(
 // --- 子组件 ---
 
 @Composable
-fun ModeButton(text: String, isSelected: Boolean, onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
+fun ScanModeCapsule(
+    scanMode: Int,
+    onModeChange: (Int) -> Unit
+) {
+    Surface(
+        shape = CircleShape,
+        color = Color.Black.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+        modifier = Modifier.padding(bottom = 20.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CapsuleTabItem(
+                text = "扫一扫",
+                icon = Icons.Default.QrCodeScanner,
+                isSelected = scanMode == 0,
+                onClick = { onModeChange(0) }
+            )
+            CapsuleTabItem(
+                text = "识文字",
+                icon = Icons.Default.TextFields,
+                isSelected = scanMode == 1,
+                onClick = { onModeChange(1) }
+            )
+        }
+    }
+}
+
+@Composable
+fun CapsuleTabItem(
+    text: String,
+    icon: ImageVector,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = CircleShape,
+        color = if (isSelected) Color.White else Color.Transparent,
         modifier = Modifier.clickable { onClick() }
     ) {
-        Text(
-            text = text,
-            color = if (isSelected) MaterialTheme.colorScheme.onBackground  else Color.Gray.copy(alpha = 0.5f),
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            fontSize = 16.sp
-        )
-        if (isSelected) {
-            Box(modifier = Modifier.padding(top = 4.dp).size(4.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (isSelected) Color.Black else Color.White.copy(alpha = 0.75f),
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = text,
+                color = if (isSelected) Color.Black else Color.White.copy(alpha = 0.75f),
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                fontSize = 13.sp
+            )
         }
     }
 }
@@ -540,12 +793,12 @@ fun SettingsDialog(
     isSimpleMode: Boolean,
     onToggleSimpleMode: (Boolean) -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("设置") },
-        text = {
+    ModernAlertDialog(
+        onDismiss = onDismiss,
+        title = "设置",
+        showContentCard = false,
+        content = {
             Column {
-                // [新增] 多码选择开关
                 ListItem(
                     headlineContent = { Text("多码选择模式") },
                     supportingContent = { Text("同屏出现多个码时，手动点击选择") },
@@ -568,7 +821,7 @@ fun SettingsDialog(
                 ListItem(
                     headlineContent = { Text("显示 OCR 扫描框") },
                     supportingContent = { Text("识字模式下显示半透明遮罩") },
-                    leadingContent = { Icon(Icons.Default.CropFree, null) }, // 需要导入 Icons.Default.CropFree 或其他
+                    leadingContent = { Icon(Icons.Default.CropFree, null) },
                     trailingContent = {
                         Switch(
                             checked = showOcrMask,
@@ -580,19 +833,23 @@ fun SettingsDialog(
                 ListItem(
                     headlineContent = { Text("简单分词模式") },
                     supportingContent = { Text("仅按空格和标点切分，不使用词典") },
-                    leadingContent = { Icon(Icons.Default.ContentCut, null) }, // 如果没有 ContentCut 图标，可以用 Edit 之类的
+                    leadingContent = { Icon(Icons.Default.ContentCut, null) },
                     trailingContent = {
                         Switch(
                             checked = isSimpleMode,
-                            onCheckedChange = onToggleSimpleMode // 绑定回调
+                            onCheckedChange = onToggleSimpleMode
                         )
                     }
                 )
             }
         },
-
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
+            ModernDialogButtonBar(
+                onConfirm = onDismiss,
+                confirmText = "关闭",
+                dismissText = "",
+                onDismiss = null
+            )
         }
     )
 }
@@ -600,16 +857,21 @@ fun SettingsDialog(
 // 2. 重启提示弹窗 UI
 @Composable
 fun RestartTipDialog(onRestart: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = {}, // 禁止点击外部关闭，强制重启
-        title = { Text("需要重启") },
-        text = { Text("自定义词库已导入成功！\n应用需要重启以重新加载词典引擎。") },
-        confirmButton = {
-            Button(onClick = onRestart) {
-                Text("立即重启")
-            }
+    ModernAlertDialog(
+        onDismiss = {},
+        title = "需要重启",
+        content = {
+            Text("自定义词库已导入成功！\n应用需要重启以重新加载词典引擎。")
         },
-        dismissButton = null // 不允许取消
+        confirmButton = {
+            ModernDialogButtonBar(
+                onConfirm = onRestart,
+                confirmText = "立即重启",
+                dismissText = "",
+                onDismiss = null
+            )
+        },
+        dismissButton = null
     )
 }
 
@@ -623,204 +885,3 @@ fun restartApp(context: Context) {
     // 杀掉当前进程，确保彻底重启
     Process.killProcess(Process.myPid())
 }
-
-//扫码页面
-@Composable
-fun ScanOverlay(
-    windowWidth: Dp = 260.dp,  // 扫描框宽度
-    windowHeight: Dp = 260.dp, // 扫描框高度
-    isAnimating: Boolean = true,
-    showMask: Boolean = true,
-    maskColor: Color = Color.Black.copy(alpha = 0.6f),
-    cornerColor: Color = ScannerCorner,
-    lineColor: Color = ScannerLine
-) {
-    val infiniteTransition = rememberInfiniteTransition(label = "scanner_anim")
-    val progress by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "progress"
-    )
-
-    Canvas(modifier = Modifier.fillMaxSize()) {
-        val canvasWidth = size.width
-        val canvasHeight = size.height
-        val windowWPx = windowWidth.toPx()
-        val windowHPx = windowHeight.toPx()
-
-        // 扫描框居中
-        val left = (canvasWidth - windowWPx) / 2
-        val top = (canvasHeight - windowHPx) / 2
-        val right = left + windowWPx
-        val bottom = top + windowHPx
-
-        // 定义扫描框区域 Rect
-
-        // === A. 绘制半透明遮罩 (Mask) ===
-        // 原理：在扫描框的 上、下、左、右 画四个矩形
-        if (showMask) {
-            drawRect(color = maskColor, topLeft = Offset(0f, 0f), size = Size(canvasWidth, top))
-            drawRect(color = maskColor, topLeft = Offset(0f, bottom), size = Size(canvasWidth, canvasHeight - bottom))
-            drawRect(color = maskColor, topLeft = Offset(0f, top), size = Size(left, windowHPx))
-            drawRect(color = maskColor, topLeft = Offset(right, top), size = Size(canvasWidth - right, windowHPx))
-        }
-
-        // === B. 绘制四个角 (Corners) ===
-        val cornerLength = 20.dp.toPx() // 角的长度
-        val cornerWidth = 4.dp.toPx()   // 角的粗细
-
-        val path = Path().apply {
-            // 左上角
-            moveTo(left, top + cornerLength); lineTo(left, top); lineTo(left + cornerLength, top)
-            // 右上角
-            moveTo(right - cornerLength, top); lineTo(right, top); lineTo(right, top + cornerLength)
-            // 右下角
-            moveTo(right, bottom - cornerLength); lineTo(right, bottom); lineTo(right - cornerLength, bottom)
-            // 左下角
-            moveTo(left + cornerLength, bottom); lineTo(left, bottom); lineTo(left, bottom - cornerLength)
-        }
-
-        drawPath(
-            path = path,
-            color = cornerColor,
-            style = Stroke(width = cornerWidth, cap = StrokeCap.Round) // 圆头线条
-        )
-
-        // === C. 绘制扫描线 (Scanner Line) ===
-        // === C. 【重点修改】绘制带拖尾效果的扫描线 ===
-        if (isAnimating) {
-            // 定义拖尾的高度 (例如 60dp)
-            val trailHeightPx = 35.dp.toPx()
-
-            // 计算主扫描线当前的 Y 坐标
-            val lineY = top + (windowHPx * progress)
-
-            clipRect(
-                left = left,
-                top = top,
-                right = right,
-                bottom = bottom
-            ) {
-                val trailBrush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.Transparent,
-                        lineColor.copy(alpha = 0.7f)
-                    ),
-                    startY = lineY - trailHeightPx,
-                    endY = lineY
-                )
-
-                drawRect(
-                    brush = trailBrush,
-                    topLeft = Offset(left, lineY - trailHeightPx),
-                    size = Size(windowWPx, trailHeightPx)
-                )
-
-                drawLine(
-                    color = lineColor,
-                    start = Offset(left, lineY),
-                    end = Offset(right, lineY),
-                    strokeWidth = 3.dp.toPx(),
-                    cap = StrokeCap.Square
-                )
-            }
-        }
-    }
-}
-
-@SuppressLint("UnusedBoxWithConstraintsScope")
-@Composable
-fun FrozenSelectionOverlay(
-    bitmap: Bitmap,
-    barcodes: List<DetectedBarcode>,
-    onBarcodeClick: (String) -> Unit,
-    onCancel: () -> Unit
-) {
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-    ) {
-        val density = LocalDensity.current
-        // [修复 1] 这里不再用 toPx()，而是直接从 constraints 拿像素值 (Int 转 Float)
-        // 这样就解决了 "Unresolved reference 'toPx'" 和类型推断错误
-        val screenWidth = constraints.maxWidth.toFloat()
-        val screenHeight = constraints.maxHeight.toFloat()
-
-        // 2. 获取图片的宽高
-        val imgWidth = bitmap.width.toFloat()
-        val imgHeight = bitmap.height.toFloat()
-
-        // 3. 计算缩放比例 (Fit 模式：取宽和高中较小的那个比例)
-        val scale = minOf(screenWidth / imgWidth, screenHeight / imgHeight)
-
-        // 4. 计算图片显示的大小
-        val displayW = imgWidth * scale
-        val displayH = imgHeight * scale
-
-        // 5. 计算黑边偏移量
-        val offsetX = (screenWidth - displayW) / 2
-        val offsetY = (screenHeight - displayH) / 2
-
-        // --- A. 绘制底图 ---
-        Image(
-            bitmap = bitmap.asImageBitmap(),
-            contentDescription = "Frozen Frame",
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Fit
-        )
-
-        // --- B. 绘制半透明遮罩 ---
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)))
-
-        // --- C. 绘制按钮 ---
-        barcodes.forEach { code ->
-            // 还原坐标公式：偏移量 + (归一化坐标 * 显示宽高)
-            val finalX = offsetX + (code.normX * displayW)
-            val finalY = offsetY + (code.normY * displayH)
-
-            // 像素转 Dp
-            val xDp = with(density) { finalX.toDp() }
-            val yDp = with(density) { finalY.toDp() }
-
-            Box(
-                modifier = Modifier
-                    .offset(x = xDp - 24.dp, y = yDp - 24.dp) // 修正中心点
-                    .size(48.dp)
-                    .background(Color.White, CircleShape)
-                    .padding(2.dp)
-                    .background(StatusSuccess, CircleShape)
-                    .clickable { onBarcodeClick(code.rawValue) },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ArrowForward,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-
-        // --- D. 底部取消按钮 ---
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 50.dp)
-        ) {
-            Button(onClick = onCancel) {
-                Text("取消选择")
-            }
-        }
-    }
-}
-
-
-
-
-
-

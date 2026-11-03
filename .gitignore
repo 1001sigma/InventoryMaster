@@ -1,15 +1,31 @@
 *.iml
 .gradle
 /local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+.idea/
 .DS_Store
 /build
 /captures
 .externalNativeBuild
 .cxx
 local.properties
+
+# 微信小程序（独立工程，不随 Android 仓库提交）
+/panku-mini/
+
+# 编译构建输出
+app/release/
+
+# AI 与开发工具本地缓存
+.mimocode/
+.zcode/
+.claude/
+.codegraph/
+.kotlin/
+.mimosa/
+.workbuddy/
+.wbapp_*
+.zcodeignore
+output/
+medical-device-symbols-*/
+__dream_query*.py
+1784300000000

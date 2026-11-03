@@ -22,7 +22,10 @@ object ChatThreadCodec {
                 content = m.content,
                 toolCallId = m.toolCallId,
                 toolCallsJson = m.toolCalls?.let { gson.toJson(it) },
-                createdAt = now
+                createdAt = now,
+                durationMs = m.durationMs,
+                model = m.model,
+                cardActionJson = m.cardActionJson
             )
         }
 
@@ -33,7 +36,10 @@ object ChatThreadCodec {
             toolCalls = row.toolCallsJson?.let { json ->
                 gson.fromJson(json, Array<AiToolCall>::class.java).toList().takeIf { it.isNotEmpty() }
             },
-            toolCallId = row.toolCallId
+            toolCallId = row.toolCallId,
+            durationMs = row.durationMs,
+            model = row.model,
+            cardActionJson = row.cardActionJson
         )
     }
 }

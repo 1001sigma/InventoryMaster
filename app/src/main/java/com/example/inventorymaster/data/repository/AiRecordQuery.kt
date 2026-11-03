@@ -19,6 +19,8 @@ data class AiRecordQuery(
     val productKeyword: String? = null,
     val batchNumber: String? = null,
     val location: String? = null,
+    val manufacturer: String? = null,
+    val isVerified: Boolean? = null,
     /** expiryDate < 该日（不含当天） */
     val expiryBefore: LocalDate? = null,
     /** expiryDate >= 该日（含当天） */
@@ -109,16 +111,17 @@ object AiRecordSqlBuilder {
     }
 
     private val SELECT_ROWS =
-        "SELECT r.id AS \"记录ID\", r.sessionId AS \"任务ID\", r.productKey AS \"产品编码\", " +
+        "SELECT r.id AS \"记录ID\", r.sessionId AS \"任务ID\", s.name AS \"任务名称\", r.productKey AS \"产品编码\", " +
             "p.productName AS \"产品名称\", p.specification AS \"规格\", p.manufacturer AS \"厂家\", " +
             "p.materialCode AS \"物料编码\", p.di AS \"DI\", p.unit AS \"单位\", " +
             "r.batchNumber AS \"批号\", r.quantity AS \"数量\", r.location AS \"库位\", " +
+            "r.is_verified AS \"is_verified\", " +
             "r.remarks AS \"备注\", " +
             displayDateExpr("r.productionDate") + " AS \"生产日期\", " +
             displayDateExpr("r.expiryDate") + " AS \"有效期\""
 
     private const val BASE_FROM =
-        " FROM stock_records r LEFT JOIN product_base p ON r.productKey = p.productKey"
+        " FROM stock_records r LEFT JOIN product_base p ON r.productKey = p.productKey LEFT JOIN inventory_sessions s ON r.sessionId = s.id"
 
     fun buildCount(query: AiRecordQuery, zone: ZoneId = ZoneId.systemDefault()): BuiltQuery {
         val (where, args) = buildWhere(query, zone)
@@ -163,6 +166,14 @@ object AiRecordSqlBuilder {
         query.location?.takeIf { it.isNotBlank() }?.let {
             conditions.add("r.location LIKE ?")
             args.add("%$it%")
+        }
+        query.manufacturer?.takeIf { it.isNotBlank() }?.let {
+            conditions.add("p.manufacturer LIKE ?")
+            args.add("%$it%")
+        }
+        query.isVerified?.let { verified ->
+            conditions.add("r.is_verified = ?")
+            args.add(if (verified) 1 else 0)
         }
         query.productKeyword?.takeIf { it.isNotBlank() }?.let { kw ->
             conditions.add(

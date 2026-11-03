@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.inventorymaster.ai.agent.AgentEvent
 import com.example.inventorymaster.ai.agent.AiAgent
 import com.example.inventorymaster.ai.agent.UiAction
+import com.example.inventorymaster.ai.agent.UserQuestionAnswer
 import com.example.inventorymaster.ai.memory.ConversationMemory
 import com.example.inventorymaster.ai.prompt.PromptBuilder
 import com.example.inventorymaster.ai.provider.AiService
@@ -24,7 +25,7 @@ import kotlinx.coroutines.flow.channelFlow
  * - 产品卡片持有（ShowProductCardList 随最终回复下发，其余 uiAction 即时执行）
  */
 class InventoryAiAgent(
-    aiService: AiService,
+    private val aiService: AiService,
     registry: ToolRegistry,
     memory: ConversationMemory = ConversationMemory()
 ) : AiAgent {
@@ -42,9 +43,14 @@ class InventoryAiAgent(
         runtime.respondConfirm(requestId, approved)
     }
 
+    /** UI 对 QuestionRequired 的答复（透传运行时） */
+    fun respondQuestion(requestId: String, answer: UserQuestionAnswer) {
+        runtime.respondQuestion(requestId, answer)
+    }
+
     override suspend fun chat(message: String): Flow<AgentEvent> = channelFlow {
         var pendingCardAction: UiAction.ShowProductCardList? = null
-        runtime.turn(message, PromptBuilder.build(currentSession)).collect { event ->
+        runtime.turn(message, PromptBuilder.build(currentSession, isLocal = aiService.isLocal())).collect { event ->
             when (event) {
                 is AiEvent.ThinkingText -> send(AgentEvent.Thinking(event.text))
                 is AiEvent.AnswerDelta -> send(AgentEvent.ResponseChunk(event.text))
@@ -64,8 +70,14 @@ class InventoryAiAgent(
                     )
                 )
                 is AiEvent.ConfirmTimedOut -> send(AgentEvent.ConfirmTimedOut(event.requestId))
+                is AiEvent.AwaitingQuestion -> send(
+                    AgentEvent.QuestionRequired(event.requestId, event.questions)
+                )
+                is AiEvent.QuestionTimedOut -> send(AgentEvent.QuestionTimedOut(event.requestId))
                 is AiEvent.ActionAvailable -> Unit // uiAction 已在 ToolCallFinished 分支处理
-                is AiEvent.Completed -> send(AgentEvent.Response(event.answer, pendingCardAction))
+                is AiEvent.Completed -> send(
+                    AgentEvent.Response(event.answer, pendingCardAction, event.durationMs, event.model)
+                )
                 is AiEvent.Failed -> send(AgentEvent.Error(event.error.message ?: "AI 服务出错", event.error.kind))
             }
         }

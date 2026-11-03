@@ -5,12 +5,16 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.inventorymaster.ai.InventoryAiAgent
 import com.example.inventorymaster.ai.agent.AgentEvent
+import com.example.inventorymaster.ai.agent.PendingQuestion
+import com.example.inventorymaster.ai.agent.ProductCardListCodec
 import com.example.inventorymaster.ai.agent.UiAction
+import com.example.inventorymaster.ai.agent.UserQuestionAnswer
 import com.example.inventorymaster.ai.agent.ExpiredProductCardData
 import com.example.inventorymaster.ai.memory.ChatThreadCodec
 import com.example.inventorymaster.ai.memory.ConversationMemory
 import com.example.inventorymaster.ai.provider.AiMessage
 import com.example.inventorymaster.ai.provider.AiProviderConfig
+import com.example.inventorymaster.ai.provider.AiService
 import com.example.inventorymaster.ai.provider.CloudAiService
 import com.example.inventorymaster.ai.provider.LocalAiService
 import com.example.inventorymaster.ai.tools.ToolRegistry
@@ -44,7 +48,11 @@ data class ChatMessage(
     val isLoading: Boolean = false,
     val cardAction: UiAction.ShowProductCardList? = null,
     /** 思维链折叠内容（工具调用的完整参数与结果；null=不可展开） */
-    val detail: String? = null
+    val detail: String? = null,
+    /** AI 最终回复的整轮耗时（毫秒，操作条展示）；null=未统计/历史数据 */
+    val durationMs: Long? = null,
+    /** 生成该回复的模型 ID（操作条展示）；null=未统计/历史数据 */
+    val model: String? = null
 )
 
 /** CONFIRM 权限工具的待确认请求 */
@@ -58,8 +66,31 @@ data class PendingConfirm(
 data class ChatThreadInfo(
     val threadId: String,
     val title: String,
-    val lastTime: Long
+    val lastTime: Long,
+    /** 任务绑定会话（threadId 编码了任务ID） */
+    val isTask: Boolean = false,
+    /** 所属任务名（仅任务会话非空，侧栏徽标用） */
+    val taskName: String? = null
 )
+
+/**
+ * 会话线程 ID 编解码（v2 多会话模型，docs/AI_UI_OPTIMIZATION.md P1-6）。
+ * - 自由会话：`g_<创建时间戳>`；旧 "global" 视为一条普通自由会话（历史数据兼容，不迁移）
+ * - 任务会话：`t<任务ID>_<创建时间戳>`，一个任务下可有多条对话
+ */
+private object ChatThreadIds {
+    fun newFree(): String = "g_${System.currentTimeMillis()}"
+    fun newTask(sessionId: Long): String = "t${sessionId}_${System.currentTimeMillis()}"
+
+    /** 任务会话 → 任务ID；自由会话 → null。旧纯数字线程ID按任务ID兼容解析 */
+    fun taskSessionId(threadId: String): Long? =
+        when {
+            threadId.startsWith("t") -> threadId.drop(1).substringBefore('_').toLongOrNull()
+            else -> threadId.toLongOrNull()
+        }
+
+    fun isFree(threadId: String): Boolean = taskSessionId(threadId) == null
+}
 
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
@@ -69,7 +100,9 @@ data class ChatUiState(
     val isConfigured: Boolean = false,
     val pendingActions: List<UiAction> = emptyList(),
     val pendingConfirm: PendingConfirm? = null,
-    val currentThreadId: String = "global"
+    val pendingQuestion: PendingQuestion? = null,
+    val currentThreadId: String = "global",
+    val draftMessage: String = ""
 )
 
 class ChatViewModel(
@@ -85,6 +118,8 @@ class ChatViewModel(
     private val chatMessageDao = chatDb.chatMessageDao()
 
     private var agent: InventoryAiAgent? = null
+    /** 当前 agent 使用的服务实例：本地模型点「停止」时据此主动中断原生生成 */
+    private var activeAiService: AiService? = null
     private val memory = ConversationMemory()
     private var currentJob: Job? = null
 
@@ -95,7 +130,7 @@ class ChatViewModel(
     /** 最近一条用户消息（重新生成/错误重试共用；切线程/清空时重置） */
     private var lastUserMessage: String? = null
 
-    /** 当前线程：任务ID字符串（任务内对话）或 THREAD_GLOBAL（无任务全局对话） */
+    /** 当前线程：`t<任务ID>_<时间戳>`（任务会话）/ `g_<时间戳>`（自由会话）/ 旧 "global"（视为自由会话） */
     private var currentThreadId: String = THREAD_GLOBAL
 
     /** memory 相对磁盘是否有未落库内容（只在真实对话后置位，避免空快照覆盖历史） */
@@ -126,9 +161,18 @@ class ChatViewModel(
                     }
                 }
         }
-        // 启动即恢复全局线程（未绑定任务时的对话）
+        // 启动着陆：最近活跃的自由会话（绝不自动绑任务）；一条都没有则新开空自由会话
         viewModelScope.launch {
-            loadThread(currentThreadId)
+            val latestFree = chatMessageDao.getThreadSummaries()
+                .firstOrNull { ChatThreadIds.isFree(it.threadId) }
+            if (latestFree != null) {
+                currentThreadId = latestFree.threadId
+                _uiState.update { it.copy(currentThreadId = latestFree.threadId) }
+                loadThread(latestFree.threadId)
+            } else {
+                currentThreadId = ChatThreadIds.newFree()
+                _uiState.update { it.copy(currentThreadId = currentThreadId) }
+            }
             refreshThreads()
         }
     }
@@ -137,22 +181,22 @@ class ChatViewModel(
     private fun initAgent(config: AiProviderConfig) {
         currentJob?.cancel()
         val aiService = if (config.isLocal) LocalAiService(config) else CloudAiService(config)
+        activeAiService = aiService
         val registry = ToolRegistry.createDefault(aiService, repository, settingsRepository)
         agent = InventoryAiAgent(aiService, registry, memory)
     }
 
     /**
-     * 绑定当前任务：切换到该任务的专属会话线程（每任务一条历史，互不串上下文）。
+     * 切换会话线程（v2 多会话核心）：session = 该线程绑定的任务上下文，自由会话传 null。
      * 切换前取消在飞生成并等待其收尾落库，避免内存/磁盘错写。
      */
-    fun setCurrentSession(session: InventorySession?) {
+    private fun switchThread(newThreadId: String, session: InventorySession?) {
         agent?.setCurrentSession(session)
-        val newThreadId = session?.id?.toString() ?: THREAD_GLOBAL
         if (newThreadId == currentThreadId) return
 
         val oldThreadId = currentThreadId
         currentThreadId = newThreadId
-        _uiState.update { it.copy(currentThreadId = newThreadId) }
+        _uiState.update { it.copy(currentThreadId = newThreadId, pendingConfirm = null, pendingQuestion = null) }
         currentJob?.cancel()
         viewModelScope.launch {
             currentJob?.join()
@@ -166,41 +210,105 @@ class ChatViewModel(
         }
     }
 
-    /** 从历史会话栏切换线程：数字线程ID 解析回任务并绑定上下文 */
-    fun openThread(threadId: String) {
+    /**
+     * 聊天页进入（路由 sessionId 参数）：
+     * - sessionId > 0：落到该任务最近活跃的会话，一条都没有则现场创建（任务下多会话）
+     * - sessionId = 0（主页/自由侧）：落到最近活跃的自由会话，绝不自动绑任务
+     */
+    fun enterFromSession(sessionId: Long) {
         viewModelScope.launch {
-            val session = threadId.toLongOrNull()?.let { repository.getSessionById(it) }
-            setCurrentSession(session)
+            if (sessionId <= 0) {
+                val latestFree = chatMessageDao.getThreadSummaries()
+                    .firstOrNull { ChatThreadIds.isFree(it.threadId) }
+                if (latestFree != null) {
+                    switchThread(latestFree.threadId, null)
+                } else {
+                    switchThread(ChatThreadIds.newFree(), null)
+                }
+            } else {
+                val session = repository.getSessionById(sessionId)
+                val latestOfTask = chatMessageDao.getThreadSummaries()
+                    .firstOrNull { ChatThreadIds.taskSessionId(it.threadId) == sessionId }
+                if (latestOfTask != null) {
+                    switchThread(latestOfTask.threadId, session)
+                } else {
+                    switchThread(ChatThreadIds.newTask(sessionId), session)
+                }
+            }
         }
     }
 
-    private suspend fun threadTitle(threadId: String): String =
-        if (threadId == THREAD_GLOBAL) "全局对话"
-        else threadId.toLongOrNull()?.let { repository.getSessionById(it)?.name } ?: "任务 $threadId"
+    /** 从历史会话栏切换线程：按线程类型解析出任务并绑定上下文 */
+    fun openThread(threadId: String) {
+        viewModelScope.launch {
+            val session = ChatThreadIds.taskSessionId(threadId)?.let { repository.getSessionById(it) }
+            switchThread(threadId, session)
+        }
+    }
+
+    /** 顶栏「新建会话」：任务语境开该任务的新对话，自由语境开新自由会话（空会话不落库，切走即弃） */
+    fun startNewChat() {
+        val sessionId = ChatThreadIds.taskSessionId(currentThreadId)
+        if (sessionId == null) {
+            switchThread(ChatThreadIds.newFree(), null)
+        } else {
+            viewModelScope.launch {
+                switchThread(ChatThreadIds.newTask(sessionId), repository.getSessionById(sessionId))
+            }
+        }
+    }
+
+    /** 会话标题统一命名：首条用户消息首行截断（20 字）；无落库消息 = 新对话 */
+    private fun titleFrom(firstMessage: String?): String {
+        val firstLine = firstMessage?.trim()
+            ?.lines()?.firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        return when {
+            firstLine.isEmpty() -> "新对话"
+            firstLine.length <= 20 -> firstLine
+            else -> firstLine.take(20) + "…"
+        }
+    }
 
     private fun refreshThreads() {
         viewModelScope.launch {
-            val fromDb = chatMessageDao.getThreadSummaries().map { summary ->
-                ChatThreadInfo(summary.threadId, threadTitle(summary.threadId), summary.lastTime)
+            val summaries = chatMessageDao.getThreadSummaries()
+            val firstMessages = chatMessageDao.getFirstUserMessages().associate { it.threadId to it.content }
+            val fromDb = summaries.map { s ->
+                val sessionId = ChatThreadIds.taskSessionId(s.threadId)
+                ChatThreadInfo(
+                    threadId = s.threadId,
+                    title = titleFrom(firstMessages[s.threadId]),
+                    lastTime = s.lastTime,
+                    isTask = sessionId != null,
+                    taskName = sessionId?.let { repository.getSessionById(it)?.name }
+                )
             }
-            // 当前线程即使还没有任何落库消息也显示在最前
-            val current = ChatThreadInfo(currentThreadId, threadTitle(currentThreadId), Long.MAX_VALUE)
-            _chatThreads.value = (listOf(current) + fromDb.filter { it.threadId != currentThreadId })
-        }
-    }
-
-    fun loadSessionById(sessionId: Long) {
-        if (sessionId <= 0) return
-        viewModelScope.launch {
-            val session = repository.getSessionById(sessionId)
-            setCurrentSession(session)
+            // 当前线程即使还没有任何落库消息也置顶显示（此时标题必然是"新对话"）；
+            // 置顶靠列表头插（下方 listOf(current) + ...），lastTime 必须是真实时间——
+            // 哨兵值（如 Long.MAX_VALUE）会被侧栏相对时间格式化成荒诞日期
+            val currentSessionId = ChatThreadIds.taskSessionId(currentThreadId)
+            val current = ChatThreadInfo(
+                threadId = currentThreadId,
+                title = titleFrom(firstMessages[currentThreadId]),
+                lastTime = System.currentTimeMillis(),
+                isTask = currentSessionId != null,
+                taskName = currentSessionId?.let { repository.getSessionById(it)?.name }
+            )
+            _chatThreads.value = listOf(current) + fromDb.filter { it.threadId != currentThreadId }
         }
     }
 
     /** 用户点击"停止"：取消当前生成（Agent 侧会补齐轮次并保持记忆合法） */
     fun stopGeneration() {
+        _uiState.value.pendingQuestion?.let {
+            agent?.respondQuestion(it.requestId, UserQuestionAnswer(isSkipped = true))
+        }
+        _uiState.update { it.copy(pendingQuestion = null) }
         currentJob?.cancel()
         currentJob = null
+        // 协程取消只能在挂起点生效——本地模型 prefill/解码期间数秒无挂起点，被动等待
+        // 会让「停止」点了没反应；立刻打断原生侧生成（cancelProcess，跨线程安全）
+        (activeAiService as? LocalAiService)?.interruptGeneration()
     }
 
     fun respondConfirm(requestId: String, approved: Boolean) {
@@ -208,11 +316,31 @@ class ChatViewModel(
         agent?.respondConfirm(requestId, approved)
     }
 
+    fun submitQuestionAnswer(requestId: String, answers: Map<Int, List<String>>) {
+        _uiState.update { it.copy(pendingQuestion = null) }
+        agent?.respondQuestion(requestId, UserQuestionAnswer(isSkipped = false, selectedOptions = answers))
+    }
+
+    fun skipQuestion(requestId: String) {
+        _uiState.update { it.copy(pendingQuestion = null) }
+        agent?.respondQuestion(requestId, UserQuestionAnswer(isSkipped = true))
+    }
+
     fun sendMessage(message: String) {
         if (message.isBlank()) return
         val currentAgent = agent ?: run {
             _uiState.update { it.copy(error = "请先在设置中配置 AI 服务") }
             return
+        }
+        // 本地模型前置检查：模型文件未下载/导入时直接提示，不走一轮注定失败的推理
+        _uiState.value.activeProvider?.takeIf { it.isLocal }?.let { config ->
+            val path = config.localModelPath
+            if (path.isNullOrBlank() || !java.io.File(path).exists()) {
+                _uiState.update {
+                    it.copy(error = "本地模型文件未就绪，请到 AI 设置页下载或导入（${config.model}）")
+                }
+                return
+            }
         }
 
         val threadIdAtSend = currentThreadId
@@ -230,7 +358,8 @@ class ChatViewModel(
                     ),
                     isProcessing = true,
                     error = null,
-                    pendingConfirm = null
+                    pendingConfirm = null,
+                    pendingQuestion = null
                 )
             }
 
@@ -300,6 +429,23 @@ class ChatViewModel(
                                 } else it
                             }
                         }
+                        is AgentEvent.QuestionRequired -> {
+                            _uiState.update {
+                                it.copy(
+                                    pendingQuestion = PendingQuestion(
+                                        requestId = event.requestId,
+                                        questions = event.questions
+                                    )
+                                )
+                            }
+                        }
+                        is AgentEvent.QuestionTimedOut -> {
+                            _uiState.update {
+                                if (it.pendingQuestion?.requestId == event.requestId) {
+                                    it.copy(pendingQuestion = null)
+                                } else it
+                            }
+                        }
                         is AgentEvent.Response -> {
                             _uiState.update { state ->
                                 val updatedMessages = state.messages.filterNot { msg -> msg.isLoading } + ChatMessage(
@@ -307,7 +453,9 @@ class ChatViewModel(
                                     role = "assistant",
                                     content = event.content,
                                     isUser = false,
-                                    cardAction = event.cardAction
+                                    cardAction = event.cardAction,
+                                    durationMs = event.durationMs,
+                                    model = event.model
                                 )
                                 state.copy(
                                     messages = updatedMessages,
@@ -393,20 +541,35 @@ class ChatViewModel(
         }
     }
 
-    fun clearChat() {
+    /**
+     * 删除会话（侧栏长按）：只删聊天记录，不动任务数据。
+     * 删当前线程需先取消在飞生成并清空内存，再删库，最后落到最近剩余会话（全部删空则新开自由会话）。
+     */
+    fun deleteThread(threadId: String) {
+        if (threadId != currentThreadId) {
+            viewModelScope.launch {
+                chatMessageDao.deleteThread(threadId)
+                refreshThreads()
+            }
+            return
+        }
         val job = currentJob
         currentJob = null
         job?.cancel()
         memory.clear()
         memoryDirty = false
         lastUserMessage = null
-        val threadId = currentThreadId
         _uiState.update { it.copy(messages = emptyList(), error = null, pendingConfirm = null) }
         viewModelScope.launch {
-            // 等被取消的在飞任务收尾（其 finally 会先持久化），再删除该线程历史
+            // 等被取消的在飞任务收尾（其 finally 会先持久化），再删除该线程
             job?.join()
             chatMessageDao.deleteThread(threadId)
-            refreshThreads()
+            val remaining = chatMessageDao.getThreadSummaries().firstOrNull()
+            if (remaining == null) {
+                switchThread(ChatThreadIds.newFree(), null)
+            } else {
+                openThread(remaining.threadId)
+            }
         }
     }
 
@@ -461,7 +624,9 @@ class ChatViewModel(
                     id = nextMessageId(), role = "user", content = m.content ?: "", isUser = true
                 )
                 m.role == "assistant" && m.toolCalls == null -> ChatMessage(
-                    id = nextMessageId(), role = "assistant", content = m.content ?: "", isUser = false
+                    id = nextMessageId(), role = "assistant", content = m.content ?: "", isUser = false,
+                    durationMs = m.durationMs, model = m.model,
+                    cardAction = m.cardActionJson?.let { ProductCardListCodec.fromJson(it) }
                 )
                 else -> null
             }
@@ -476,6 +641,16 @@ class ChatViewModel(
 
     /** 错误重试：与重新生成同机制（失败轮的兜底文案留在上下文，模型知晓刚才失败过） */
     fun retryLast() = regenerateLast()
+
+    /** 设置输入草稿（如快捷输入框上拉进入全屏聊天时将未发送文字带入） */
+    fun setDraftMessage(text: String) {
+        _uiState.update { it.copy(draftMessage = text) }
+    }
+
+    /** 消费草稿 */
+    fun clearDraftMessage() {
+        _uiState.update { it.copy(draftMessage = "") }
+    }
 
     companion object {
         private const val THREAD_GLOBAL = "global"

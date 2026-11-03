@@ -31,7 +31,8 @@ import com.example.inventorymaster.data.model.StockRecordCombined
     indices = [
         Index(value = ["sessionId", "productKey", "batchNumber", "location"], unique = false),
         Index(value = ["productKey"]),
-        Index(value = ["uuid"], unique = true)
+        Index(value = ["uuid"], unique = true),
+        Index(value = ["sessionId", "is_verified"])
     ]
 )
 data class StockRecord(
@@ -50,11 +51,13 @@ data class StockRecord(
     val location: String,      // 库位
 
     val actualQuantity: Double? = null,     // 实际数量（初始为null）
-    val remarks: String? = null,            // 备注 (存"已查验"等状态)
+    val remarks: String? = null,            // 备注
+    @ColumnInfo(name = "is_verified", defaultValue = "0")
+    val isVerified: Boolean = false,        // 查验状态：true=已查验, false=未查验
     val sourceType: Int = 1,    // 0=手动, 1=Excel导入, 2=云端下载
 
     @ColumnInfo(name = "operator")
-    var operator: String = Build.MODEL,
+    var operator: String = (try { Build.MODEL } catch (_: Throwable) { null }) ?: "Unknown",
 
     @ColumnInfo(name = "last_update_time")
     var lastUpdateTime: Long = System.currentTimeMillis(),
@@ -65,6 +68,32 @@ data class StockRecord(
     @ColumnInfo(name = "history_log")
     var historyLog: String? = ""
 )
+
+/**
+ * 撤销查验核心逻辑：
+ * 1. 若实际盘点数量（actualQuantity）非空，自动将实盘数值格式化备份写入备注（避免仓管盘点结果丢失）；
+ * 2. 清空 actualQuantity 为 null；
+ * 3. 将 isVerified 设为 false；
+ * 4. 标记脏数据 syncStatus=1 并刷新时间戳。
+ */
+fun StockRecord.uncheck(): StockRecord {
+    val backupRemark = actualQuantity?.let { qty ->
+        val qtyStr = if (qty == qty.toLong().toDouble()) qty.toLong().toString() else qty.toString()
+        "原实盘: $qtyStr"
+    }
+    val newRemarks = when {
+        backupRemark == null -> remarks
+        remarks.isNullOrBlank() -> backupRemark
+        else -> "$backupRemark; $remarks"
+    }
+    return this.copy(
+        isVerified = false,
+        actualQuantity = null,
+        remarks = newRemarks,
+        lastUpdateTime = System.currentTimeMillis(),
+        syncStatus = 1
+    )
+}
 
 // 1. 定义哪些字段需要高亮
 enum class HighlightField {

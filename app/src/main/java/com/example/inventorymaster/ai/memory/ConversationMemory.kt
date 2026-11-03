@@ -67,15 +67,23 @@ class ConversationMemory {
      * 也用于异常/取消/超时兜底——即使轮次未走完，也补一条 assistant 说明后关闭，
      * 保证导出的消息序列永远合法。
      */
-    fun closeTurn(reply: String) {
+    fun closeTurn(reply: String, durationMs: Long? = null, model: String? = null, cardActionJson: String? = null) {
         val turn = openTurn
         if (turn != null) {
-            turn.messages.add(AiMessage("assistant", reply))
+            turn.messages.add(
+                AiMessage("assistant", reply, durationMs = durationMs, model = model, cardActionJson = cardActionJson)
+            )
             turn.open = false
             openTurn = null
         } else {
             // 无开启中的轮次（如请求发出前就失败）：独立成一条 assistant 消息
-            turns.addLast(Turn().apply { messages.add(AiMessage("assistant", reply)) })
+            turns.addLast(
+                Turn().apply {
+                    messages.add(
+                        AiMessage("assistant", reply, durationMs = durationMs, model = model, cardActionJson = cardActionJson)
+                    )
+                }
+            )
         }
         trimCompletedTurns()
     }
@@ -95,7 +103,7 @@ class ConversationMemory {
                 m.role == "user" -> openUserTurn(m.content ?: "")
                 m.role == "tool" -> appendToolResult(m.toolCallId ?: "", "", m.content ?: "")
                 m.role == "assistant" && m.toolCalls != null -> appendAssistantToolCalls(m.content, m.toolCalls)
-                m.role == "assistant" -> closeTurn(m.content ?: "")
+                m.role == "assistant" -> closeTurn(m.content ?: "", m.durationMs, m.model, m.cardActionJson)
             }
         }
     }

@@ -17,6 +17,8 @@ data class InventorySession(
     val date: Long = System.currentTimeMillis(),
     val status: Int = 0,      // 0:进行中, 1:已归档, 2:已锁定
     val isLocked: Boolean = false,
+    // 服务端任务状态机：status=0 且 startedAt 为空 = 待开始（仅服务端下发任务有意义，见 isPendingStart 扩展属性）
+    val startedAt: Long? = null,
 
     // 3. 数据来源
     val sessionSource: Int = 0,      // 0:本地创建, 1:服务器下发

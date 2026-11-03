@@ -36,6 +36,9 @@ interface StockRecordDao {
     @Query("SELECT * FROM stock_records WHERE uuid = :uuid LIMIT 1")
     suspend fun getRecordByUuid(uuid: String): StockRecord?
 
+    @Query("SELECT * FROM stock_records WHERE id = :id LIMIT 1")
+    suspend fun getRecordById(id: Long): StockRecord?
+
 
     // --- 事务操作 ---
 
@@ -61,7 +64,7 @@ interface StockRecordDao {
         LEFT JOIN product_base ON stock_records.productKey = product_base.productKey
         WHERE stock_records.sessionId = :sessionId
         AND (
-            stock_records.productKey LIKE '%' || :query || '%'
+            product_base.di LIKE '%' || :query || '%'
             OR stock_records.batchNumber LIKE '%' || :query || '%'
             OR stock_records.location LIKE '%' || :query || '%'
             OR stock_records.remarks LIKE '%' || :query || '%'
@@ -69,7 +72,9 @@ interface StockRecordDao {
             OR product_base.manufacturer LIKE '%' || :query || '%'
             OR product_base.specification LIKE '%' || :query || '%'
             OR product_base.model LIKE '%' || :query || '%'
+            OR product_base.materialCode LIKE '%' || :query || '%'
         )
+        ORDER BY stock_records.id ASC
     """)
     suspend fun searchRecordsByQuery(sessionId: Long, query: String): List<StockRecordCombined>
 
@@ -80,6 +85,7 @@ interface StockRecordDao {
         WHERE sessionId = :sessionId
         AND productKey = :productKey
         AND batchNumber = :batch
+        ORDER BY id ASC
     """)
     suspend fun getRecordsByUdi(sessionId: Long, productKey: String, batch: String): List<StockRecordCombined>
 
@@ -89,6 +95,7 @@ interface StockRecordDao {
         SELECT * FROM stock_records
         WHERE sessionId = :sessionId
         AND batchNumber = :batch
+        ORDER BY id ASC
     """)
     suspend fun getRecordsBybatchorexpiryDate(sessionId: Long,batch: String): List<StockRecordCombined>
 
@@ -98,20 +105,63 @@ interface StockRecordDao {
         SELECT * FROM stock_records
         WHERE sessionId = :sessionId
         AND productKey = :productKey
+        ORDER BY id ASC
     """)
     suspend fun getRecordsByKey(sessionId: Long, productKey: String): List<StockRecordCombined>
+
+    // 4a. 按 DI 搜索（组合键下同 DI 可能对应多个产品，JOIN 产品表把它们的记录全部查出）
+    @Transaction
+    @Query("""
+        SELECT stock_records.* FROM stock_records
+        INNER JOIN product_base ON stock_records.productKey = product_base.productKey
+        WHERE stock_records.sessionId = :sessionId
+        AND product_base.di = :di
+        ORDER BY stock_records.id ASC
+    """)
+    suspend fun getRecordsByDi(sessionId: Long, di: String): List<StockRecordCombined>
+
+    // 4b. 按 DI + 批号搜索（扫码带批号场景）
+    @Transaction
+    @Query("""
+        SELECT stock_records.* FROM stock_records
+        INNER JOIN product_base ON stock_records.productKey = product_base.productKey
+        WHERE stock_records.sessionId = :sessionId
+        AND product_base.di = :di
+        AND stock_records.batchNumber = :batch
+        ORDER BY stock_records.id ASC
+    """)
+    suspend fun getRecordsByDiAndBatch(sessionId: Long, di: String, batch: String): List<StockRecordCombined>
+
+    // 4c. 非扫码搜索：组合键 / DI / 物料编码 任一精确命中
+    @Transaction
+    @Query("""
+        SELECT stock_records.* FROM stock_records
+        LEFT JOIN product_base ON stock_records.productKey = product_base.productKey
+        WHERE stock_records.sessionId = :sessionId
+        AND (
+            stock_records.productKey = :query
+            OR product_base.di = :query
+            OR product_base.materialCode = :query
+        )
+        ORDER BY stock_records.id ASC
+    """)
+    suspend fun getRecordsByKeyOrDiOrMat(sessionId: Long, query: String): List<StockRecordCombined>
+
+    // 跨任务引用计数（删除产品保护用）
+    @Query("SELECT COUNT(*) FROM stock_records WHERE productKey = :productKey")
+    suspend fun countRecordsByKey(productKey: String): Int
 
     // 5. 统计未查验数量 (逻辑不变，但为了安全加个 Transaction)
     @Query("""
         SELECT COUNT(*) FROM stock_records 
         WHERE sessionId = :sessionId 
-        AND (remarks IS NULL OR remarks NOT LIKE '%已查验%')
+        AND (is_verified = 0 AND actualQuantity IS NULL)
     """)
     suspend fun getUnverifiedCount(sessionId: Long): Int
 
     // 6. 导出专用 (和 getRecordsBySession 其实一样，只是为了命名语义区分)
     @Transaction
-    @Query("SELECT * FROM stock_records WHERE sessionId = :sessionId")
+    @Query("SELECT * FROM stock_records WHERE sessionId = :sessionId ORDER BY id ASC")
     fun getExportData(sessionId: Long): List<StockRecordCombined>
 
     // 查重：根据 productKey+批号+库位 找记录
@@ -143,5 +193,14 @@ interface StockRecordDao {
         val cleanRecords = records.map { it.copy(syncStatus = 0) }
         insertRecords(cleanRecords)
     }
+
+    @Query("UPDATE stock_records SET productKey = :newKey WHERE productKey = :oldKey")
+    suspend fun updateProductKeyForRecords(oldKey: String, newKey: String)
+
+    @Query("DELETE FROM stock_records WHERE uuid IN (:uuids)")
+    suspend fun deleteRecordsByUuids(uuids: List<String>)
+
+    @Query("SELECT uuid FROM stock_records WHERE sessionId = :sessionId")
+    suspend fun getRecordUuidsBySession(sessionId: Long): List<String>
 
 }

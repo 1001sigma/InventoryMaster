@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,23 +30,43 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brightness2
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SearchOff
+import android.content.Intent
+import android.net.Uri
+import android.provider.DocumentsContract
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SettingsSystemDaydream
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.LowPriority
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import com.example.inventorymaster.ui.theme.StatusSuccess
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -56,10 +77,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -77,6 +96,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
@@ -84,7 +104,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
-import com.example.inventorymaster.ui.ai.AiProviderSettingsContent
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -92,8 +111,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.inventorymaster.data.model.MappingTemplate
 import com.example.inventorymaster.ui.components.AppTextField
+import com.example.inventorymaster.ui.theme.ColorPaletteBottomSheet
+import com.example.inventorymaster.ui.theme.ColorTuple
+import com.example.inventorymaster.ui.theme.ColorTupleBadge
+import com.example.inventorymaster.ui.theme.ColorTupleDefaults
 import com.example.inventorymaster.ui.theme.ModernColorSchemes
 import com.example.inventorymaster.ui.theme.TouchTargetMin
+import com.example.inventorymaster.ui.theme.toHex
 import com.example.inventorymaster.utils.NetworkUtils
 import com.example.inventorymaster.viewmodel.InventoryViewModel
 import com.example.inventorymaster.viewmodel.SettingsViewModel
@@ -106,9 +130,11 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     inventoryViewModel: InventoryViewModel,
     onNavigateToWatermark: () -> Unit,   // 新增：跳转到水印设置
-    onNavigateToSignature: () -> Unit    // 新增：跳转到签名库
+    onNavigateToSignature: () -> Unit,   // 新增：跳转到签名库
+    onNavigateToAiSettings: () -> Unit   // 跳转到 AI 助手设置页
     ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
 
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -122,61 +148,71 @@ fun SettingsScreen(
 
     var customSectionExpanded by remember { mutableStateOf(false) }
     var darkSectionExpanded by remember { mutableStateOf(false) }
+    var showColorPaletteSheet by remember { mutableStateOf(false) }
     var scanFrameSectionExpanded by remember { mutableStateOf(false) }
     var inventorySectionExpanded by remember { mutableStateOf(false) }
     var networkSectionExpanded by remember { mutableStateOf(false) }
-    var aiSectionExpanded by remember { mutableStateOf(false) }
     var excelMappingSectionExpanded by remember { mutableStateOf(false) }
     var pdfSectionExpanded by remember { mutableStateOf(false) }
 
-    // ===== M2（R1）：操作员绑定 =====
-    var showOperatorScanner by remember { mutableStateOf(false) }
-    var bindError by remember { mutableStateOf<String?>(null) }
-    var showBindManualDialog by remember { mutableStateOf(false) }
-    var bindCodeInput by remember { mutableStateOf("") }
-    val cameraPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) showOperatorScanner = true
-        else bindError = "相机权限被拒绝，请使用手动输入绑定码"
-    }
-
-    if (showOperatorScanner) {
-        // 二维码内容即绑定码原文，直接交给绑定接口
-        com.example.inventorymaster.ui.analyzer.ScanScreen(
-            onScanResult = { raw ->
-                showOperatorScanner = false
-                viewModel.bindOperator(raw) { err -> bindError = err }
-            },
-            onClose = { showOperatorScanner = false }
-        )
-        return
-    }
-
-    if (showBindManualDialog) {
-        AlertDialog(
-            onDismissRequest = { showBindManualDialog = false },
-            title = { Text("输入绑定码") },
-            text = {
-                OutlinedTextField(
-                    value = bindCodeInput,
-                    onValueChange = { bindCodeInput = it.uppercase() },
-                    label = { Text("8 位绑定码") },
-                    singleLine = true
+    // ===== PDF 本地储存位置（SAF 文件夹持久授权）=====
+    var showPdfDirDialog by remember { mutableStateOf(false) }
+    val pdfDirPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            // 取得跨重启的持久读写授权（用户在系统选择器里勾选的文件夹）
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
+            }
+            viewModel.setPdfExportDirUri(uri.toString())
+        }
+    }
+
+    // ===== 操作者昵称设置 =====
+    var showEditNicknameDialog by remember { mutableStateOf(false) }
+    var editNicknameInput by remember { mutableStateOf("") }
+
+    if (showEditNicknameDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditNicknameDialog = false },
+            title = { Text("修改操作者昵称") },
+            text = {
+                Column {
+                    Text(
+                        "任务历史与扫码记录均会以此名称标识操作者：",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = editNicknameInput,
+                        onValueChange = { if (it.length <= 16) editNicknameInput = it },
+                        label = { Text("昵称") },
+                        singleLine = true
+                    )
+                }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    showBindManualDialog = false
-                    viewModel.bindOperator(bindCodeInput) { err -> bindError = err }
-                }) { Text("绑定") }
+                TextButton(
+                    onClick = {
+                        val trimmed = editNicknameInput.trim()
+                        if (trimmed.isNotBlank()) {
+                            viewModel.setOperatorName(trimmed)
+                            showEditNicknameDialog = false
+                        }
+                    },
+                    enabled = editNicknameInput.trim().isNotBlank()
+                ) { Text("保存") }
             },
-            dismissButton = { TextButton(onClick = { showBindManualDialog = false }) { Text("取消") } }
+            dismissButton = {
+                TextButton(onClick = { showEditNicknameDialog = false }) { Text("取消") }
+            }
         )
     }
-
-    // Map preset colors to their scheme names for labels
-    val schemeNames = ModernColorSchemes.allSchemes.map { it.name }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -207,44 +243,47 @@ fun SettingsScreen(
             }
         }
 
-        // 2. "自定义" 分组 (可折叠)
+        // 2. "外观与配色" 分组 (可折叠)
         item {
+            val activeTuple = uiState.getActiveColorTuple()
+            val activePreset = ColorTupleDefaults.presets.find { it.tuple.primary == activeTuple.primary }
+            val activeTupleName = activePreset?.name ?: "自定义 (${activeTuple.primary.toHex()})"
+            val isDynamic = uiState.useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
             ExpandableSection(
-                title = "外观自定义",
+                title = "外观与配色",
                 icon = Icons.Default.Palette,
                 expanded = customSectionExpanded,
                 onExpandChange = { customSectionExpanded = it }
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "配色方案",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    )
-
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(PresetColors) { color ->
-                            val schemeIdx = PresetColors.indexOf(color)
-                            val schemeName = if (schemeIdx < schemeNames.size) schemeNames[schemeIdx] else ""
-                            ColorSwatchWithLabel(
-                                color = color,
-                                label = schemeName,
-                                isSelected = uiState.seedColor == color.toArgb().toLong(),
-                                onClick = { viewModel.setSeedColor(color.toArgb().toLong()) }
+                    // 配色方案入口行 (仿 ImageToolbox 风格，内嵌 3-Tone 切片徽章)
+                    SettingsItem(
+                        title = "配色方案",
+                        subtitle = if (isDynamic) "系统壁纸动态取色生效中（停用后可自定义）" else "当前方案：$activeTupleName",
+                        icon = Icons.Default.Palette,
+                        enabled = !isDynamic,
+                        onClick = {
+                            if (isDynamic) {
+                                android.widget.Toast.makeText(context, "动态颜色开启中，请先关闭动态颜色以选用配色方案", android.widget.Toast.LENGTH_SHORT).show()
+                            } else {
+                                showColorPaletteSheet = true
+                            }
+                        },
+                        endContent = {
+                            ColorTupleBadge(
+                                colorTuple = activeTuple,
+                                size = 42.dp,
+                                isSelected = true
                             )
                         }
-                    }
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp).padding(horizontal = 16.dp))
+                    )
 
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp, horizontal = 16.dp))
                         SettingsSwitch(
                             title = "动态颜色",
-                            subtitle = "使用壁纸颜色作为应用主题",
+                            subtitle = "根据系统壁纸调色板自动提取主题色（Android 12+）",
                             icon = Icons.Default.SettingsSystemDaydream,
                             checked = uiState.useDynamicColor,
                             onCheckedChange = { viewModel.setDynamicColor(it) }
@@ -294,7 +333,7 @@ fun SettingsScreen(
 
                     SettingsSwitch(
                         title = "AMOLED 纯黑",
-                        subtitle = "深色模式下使用纯黑背景以节省电量",
+                        subtitle = "深色模式下使用纯黑背景以节省电量（适配手持机 OLED 屏）",
                         icon = Icons.Default.DarkMode,
                         checked = uiState.isAmoledMode,
                         onCheckedChange = { viewModel.setAmoledMode(it) }
@@ -330,32 +369,60 @@ fun SettingsScreen(
                     val isCustom = customThreshold !in thresholdOptions
                     var showCustomDialog by remember { mutableStateOf(false) }
 
-                    // 胶囊分段选择：不提醒 | 10 | 15 | 30 | 自定义
-                    val segmentCount = thresholdOptions.size + 1
-                    SingleChoiceSegmentedButtonRow(
+                    // 胶囊分段选择：斜杠铃铛(不提醒) | 10 | 15 | 30 | 自定义
+                    // 手工分权重布局：数字段收窄，把宽度让给「自定义」避免文字截断
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        color = MaterialTheme.colorScheme.surface,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp)
+                            .height(40.dp)
                     ) {
-                        thresholdOptions.forEachIndexed { index, days ->
-                            SegmentedButton(
-                                selected = customThreshold == days && !isCustom,
-                                onClick = { viewModel.setNearExpiryThreshold(days) },
-                                shape = SegmentedButtonDefaults.itemShape(index = index, count = segmentCount),
-                                icon = {}
-                            ) {
-                                Text(if (days == 0) "不提醒" else "$days", maxLines = 1)
+                        Row(modifier = Modifier.fillMaxSize()) {
+                            ThresholdSegmentCell(
+                                weight = 0.85f,
+                                selected = customThreshold == 0 && !isCustom,
+                                onClick = { viewModel.setNearExpiryThreshold(0) },
+                                showDivider = false
+                            ) { tint ->
+                                Icon(
+                                    Icons.Default.NotificationsOff,
+                                    contentDescription = "不提醒",
+                                    tint = tint,
+                                    modifier = Modifier.size(20.dp)
+                                )
                             }
-                        }
-                        SegmentedButton(
-                            selected = isCustom,
-                            onClick = { showCustomDialog = true },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = segmentCount - 1, count = segmentCount
-                            ),
-                            icon = {}
-                        ) {
-                            Text("自定义", maxLines = 1)
+                            thresholdOptions.filter { it > 0 }.forEach { days ->
+                                ThresholdSegmentCell(
+                                    weight = 0.85f,
+                                    selected = customThreshold == days && !isCustom,
+                                    onClick = { viewModel.setNearExpiryThreshold(days) },
+                                    showDivider = true
+                                ) { tint ->
+                                    Text(
+                                        "$days",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = tint,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                            ThresholdSegmentCell(
+                                weight = 1.25f,
+                                selected = isCustom,
+                                onClick = { showCustomDialog = true },
+                                showDivider = true
+                            ) { tint ->
+                                // 选中自定义时直接显示自定义天数，便于确认当前生效值
+                                Text(
+                                    if (isCustom) "$customThreshold" else "自定义",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = tint,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
 
@@ -424,6 +491,37 @@ fun SettingsScreen(
                         },
                         onReset = { viewModel.resetRecordCardConfig() }
                     )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                    SettingsSwitch(
+                        title = "快捷计算器保留上次结果",
+                        subtitle = "再次打开时自动带入上次计算结果，关闭则每次均为空白状态",
+                        icon = Icons.Default.Calculate,
+                        checked = uiState.calcRetainLastResult,
+                        onCheckedChange = { viewModel.setCalcRetainLastResult(it) }
+                    )
+                    SettingsSwitch(
+                        title = "长光模式（智能识别）",
+                        subtitle = "自动识别长光华医 21 位试剂条码并提取批号搜索，无需手动切换",
+                        icon = Icons.Default.AutoAwesome,
+                        checked = uiState.enableHybiomeMode,
+                        onCheckedChange = { viewModel.setHybiomeMode(it) }
+                    )
+                    SettingsSwitch(
+                        title = "已查验物料自动移至末尾",
+                        subtitle = "开启后已查验物料自动排至列表末尾，便于聚焦未盘物料；关闭则严格保持原始录入顺序",
+                        icon = Icons.Default.LowPriority,
+                        checked = uiState.sinkVerifiedItems,
+                        onCheckedChange = { viewModel.setSinkVerifiedItems(it) }
+                    )
+                    SettingsSwitch(
+                        title = "空搜索不显示数据（测试）",
+                        subtitle = "开启后，搜索框为空时不自动加载全量物料，仅在扫码或输入关键词后显示匹配项",
+                        icon = Icons.Default.SearchOff,
+                        checked = uiState.emptySearchShowsNothing,
+                        onCheckedChange = { viewModel.setEmptySearchShowsNothing(it) }
+                    )
                 }
             }
         }
@@ -444,6 +542,13 @@ fun SettingsScreen(
                         checked = uiState.useOpenCV,
                         onCheckedChange = { viewModel.setUseOpenCV(it) }
                     )
+                    SettingsSwitch(
+                        title = "拍照原图存相册",
+                        subtitle = "开启后批量扫描拍照时自动将原始照片存入系统相册；默认关闭",
+                        icon = Icons.Default.PhotoLibrary,
+                        checked = uiState.saveOriginalPhotoToGallery,
+                        onCheckedChange = { viewModel.setSaveOriginalPhotoToGallery(it) }
+                    )
                 }
             }
         }
@@ -462,6 +567,12 @@ fun SettingsScreen(
                     onSave = { viewModel.setServerIp(it) },
                     onSearchServer = { app.connectionManager.startManualDiscovery() }
                 )
+                Spacer(modifier = Modifier.height(12.dp))
+                ServerTokenInput(
+                    currentToken = uiState.serverToken,
+                    onSave = { viewModel.setServerToken(it) },
+                    onVerify = { token, callback -> viewModel.verifyAndSaveToken(token, callback) }
+                )
                 SettingsSwitch(
                     title = "实时推送（长连接）",
                     subtitle = "批量扫码实时录入的逐条状态改为服务端即时推送；关闭后回到 2.5 秒轮询",
@@ -477,38 +588,65 @@ fun SettingsScreen(
                     onCheckedChange = { viewModel.setInventoryPushEnabled(it) }
                 )
 
-                // M2（R1）：操作员绑定
-                val bindContext = LocalContext.current
-                Text(
-                    if (uiState.operatorName.isBlank()) "当前操作员：未绑定（绑定后该设备的记录自动归属操作员）"
-                    else "当前操作员：${uiState.operatorName}",
-                    style = MaterialTheme.typography.bodySmall
+                // 操作者昵称显示与修改入口
+                SettingsItem(
+                    title = "操作者昵称",
+                    subtitle = if (uiState.operatorName.isBlank()) "点击设置昵称" else "当前昵称：${uiState.operatorName}",
+                    icon = Icons.Default.Create,
+                    onClick = {
+                        editNicknameInput = uiState.operatorName
+                        showEditNicknameDialog = true
+                    }
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
-                            bindContext, android.Manifest.permission.CAMERA
-                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                        if (granted) showOperatorScanner = true else cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
-                    }) { Text("扫码绑定") }
-                    OutlinedButton(onClick = { showBindManualDialog = true }) { Text("手动输入绑定码") }
-                }
-                bindError?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+
+                HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = "产品库同步",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "从服务器拉取全量/增量物料主档（含金蝶同步数据）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    androidx.compose.material3.Button(
+                        onClick = { inventoryViewModel.syncProductLibrary() },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("立即同步")
+                    }
                 }
             }
         }
 
-        // 5.5 "AI 助手" 分组
+        // 5.5 "AI 助手" 入口（独立设置页，点击跳转）
         item {
-            ExpandableSection(
-                title = "AI 助手",
-                icon = Icons.Default.AutoAwesome,
-                expanded = aiSectionExpanded,
-                onExpandChange = { aiSectionExpanded = it }
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                AiSettingsContent(
-                    viewModel = viewModel
+                SettingsItem(
+                    title = "AI 助手",
+                    subtitle = "AI 服务商、本地模型与思考过程显示设置",
+                    icon = Icons.Default.AutoAwesome,
+                    onClick = onNavigateToAiSettings,
+                    showChevron = true,
+                    // 与其他分组头图标同色（ExpandableSection 头图标为主题色）
+                    iconTint = MaterialTheme.colorScheme.primary
                 )
             }
         }
@@ -555,12 +693,70 @@ fun SettingsScreen(
                         icon = Icons.Default.Create,
                         onClick = onNavigateToSignature
                     )
+
+                    // 本地储存位置：SAF 文件夹持久授权，导出时自动保存不再弹选位器
+                    SettingsItem(
+                        title = "本地储存位置",
+                        subtitle = if (uiState.pdfExportDirUri.isBlank())
+                            "未设置：每次导出时弹系统选位器选择保存位置"
+                        else
+                            "导出自动保存到：${pdfDirDisplay(uiState.pdfExportDirUri)}",
+                        icon = Icons.Default.Folder,
+                        onClick = {
+                            if (uiState.pdfExportDirUri.isBlank()) pdfDirPicker.launch(null)
+                            else showPdfDirDialog = true
+                        }
+                    )
                 }
             }
         }
 
         item { Spacer(modifier = Modifier.height(80.dp)) }
     }
+
+    // PDF 本地储存位置管理弹窗（已设置时点按该项弹出）
+    if (showPdfDirDialog) {
+        AlertDialog(
+            onDismissRequest = { showPdfDirDialog = false },
+            title = { Text("本地储存位置") },
+            text = {
+                Text(
+                    "当前保存到：${pdfDirDisplay(uiState.pdfExportDirUri)}\n\n" +
+                        "导出 PDF 时将自动命名保存到该文件夹，不再弹出系统选位器。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPdfDirDialog = false
+                    pdfDirPicker.launch(null)
+                }) { Text("重新选择") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showPdfDirDialog = false
+                    // 释放持久授权并清除设置，恢复"每次询问"
+                    runCatching {
+                        context.contentResolver.releasePersistableUriPermission(
+                            Uri.parse(uiState.pdfExportDirUri),
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                    }
+                    viewModel.setPdfExportDirUri("")
+                }) { Text("清除") }
+            }
+        )
+    }
+
+    // ===== 配色方案管理抽屉 (仿 ImageToolbox) =====
+    ColorPaletteBottomSheet(
+        visible = showColorPaletteSheet,
+        currentColorTuple = uiState.getActiveColorTuple(),
+        customTuples = uiState.getCustomColorTuples(),
+        onDismiss = { showColorPaletteSheet = false },
+        onSelectColorTuple = { viewModel.setColorTuple(it) },
+        onAddCustomColorTuple = { viewModel.addCustomColorTuple(it) },
+        onDeleteCustomColorTuple = { viewModel.removeCustomColorTuple(it) }
+    )
 }
 
 // --- 核心组件封装 ---
@@ -639,7 +835,8 @@ fun SettingsSwitch(
     subtitle: String? = null,
     icon: ImageVector,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    iconTint: Color = MaterialTheme.colorScheme.onSurfaceVariant
 ) {
     Row(
         modifier = Modifier
@@ -648,7 +845,7 @@ fun SettingsSwitch(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(icon, contentDescription = null, tint = iconTint)
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(text = title, style = MaterialTheme.typography.bodyLarge)
@@ -710,23 +907,99 @@ fun SettingsItem(
     title: String,
     subtitle: String? = null,
     icon: ImageVector,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    showChevron: Boolean = false,
+    enabled: Boolean = true,
+    iconTint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    endContent: (@Composable () -> Unit)? = null
 ) {
+    val rowAlpha = if (enabled) 1f else 0.45f
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = true, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (enabled) iconTint else iconTint.copy(alpha = 0.4f)
+        )
         Spacer(modifier = Modifier.width(16.dp))
-        Column(modifier = Modifier.weight(1f)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .alpha(rowAlpha)
+        ) {
             Text(text = title, style = MaterialTheme.typography.bodyLarge)
             if (subtitle != null) {
                 Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        if (endContent != null) {
+            Spacer(modifier = Modifier.width(12.dp))
+            Box(modifier = Modifier.alpha(rowAlpha)) {
+                endContent()
+            }
+        }
+        if (showChevron) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.4f)
+            )
+        }
+    }
+}
+
+/**
+ * 近效期分段选择单元：无自身圆角（外层 Surface 统一裁剪），可选 1dp 左分隔线；
+ * weight 控制各段宽度占比（数字段窄、自定义段宽）
+ */
+@Composable
+private fun RowScope.ThresholdSegmentCell(
+    weight: Float,
+    selected: Boolean,
+    onClick: () -> Unit,
+    showDivider: Boolean,
+    content: @Composable (Color) -> Unit
+) {
+    if (showDivider) {
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .fillMaxHeight()
+                .background(MaterialTheme.colorScheme.outlineVariant)
+        )
+    }
+    Box(
+        modifier = Modifier
+            .weight(weight)
+            .fillMaxHeight()
+            .background(
+                if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        content(
+            if (selected) MaterialTheme.colorScheme.onSecondaryContainer
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** SAF tree URI → 人话路径："primary:Documents/盘存PDF" → "Documents/盘存PDF" */
+private fun pdfDirDisplay(uriString: String): String {
+    if (uriString.isBlank()) return ""
+    return try {
+        val docId = DocumentsContract.getTreeDocumentId(Uri.parse(uriString))
+        docId.substringAfter(':', docId).ifBlank { docId }
+    } catch (_: Exception) {
+        uriString
     }
 }
 
@@ -911,53 +1184,96 @@ fun ServerIpInput(
 }
 
 @Composable
-fun AiSettingsContent(
-    viewModel: SettingsViewModel
+fun ServerTokenInput(
+    currentToken: String,
+    onSave: (String) -> Unit,
+    onVerify: (String, (Boolean, String) -> Unit) -> Unit
 ) {
-    val providers by viewModel.aiProviders.collectAsState()
-    val activeProviderId by viewModel.activeProviderId.collectAsState()
-    val uiState by viewModel.uiState.collectAsState()
+    var tokenText by remember(currentToken) { mutableStateOf(currentToken) }
+    var verifying by remember { mutableStateOf(false) }
+    var verifyResultMsg by remember { mutableStateOf<String?>(null) }
+    var verifySuccess by remember { mutableStateOf(false) }
+    var showPassword by remember { mutableStateOf(false) }
 
     Column(
-        modifier = Modifier.padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        modifier = Modifier.padding(horizontal = 16.dp)
     ) {
-        val activeProvider = providers.find { it.id == activeProviderId }
-
-        // 思维链开关（DeepSeek 风格折叠卡片；关闭=只显示一行工具提示）
-        SettingsSwitch(
-            title = "显示思考过程",
-            subtitle = "聊天中展示 AI 的思考文本与每次工具调用的参数、结果详情（可折叠）",
-            icon = Icons.Default.AutoAwesome,
-            checked = uiState.aiShowThinking,
-            onCheckedChange = { viewModel.setAiShowThinking(it) }
+        Text(
+            text = "服务端认证 Token",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        Text(
+            text = "与服务端通信的安全密钥（可在服务端启动控制台查看）",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 12.dp)
         )
 
-        if (activeProvider != null) {
-            Text(
-                text = "当前服务商: ${activeProvider.name}",
-                style = MaterialTheme.typography.bodyMedium
+        AppTextField(
+            value = tokenText,
+            onValueChange = {
+                tokenText = it
+                verifyResultMsg = null
+            },
+            singleLine = true,
+            placeholder = "请输入 Token",
+            keyboardOptions = KeyboardOptions(
+                imeAction = ImeAction.Done
+            ),
+            trailingIcon = {
+                IconButton(onClick = { showPassword = !showPassword }) {
+                    Icon(
+                        imageVector = if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        contentDescription = if (showPassword) "隐藏 Token" else "显示 Token"
+                    )
+                }
+            },
+            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+            isError = verifyResultMsg != null && !verifySuccess,
+            supportingText = verifyResultMsg?.let { msg ->
+                {
+                    Text(
+                        text = msg,
+                        color = if (verifySuccess) StatusSuccess else MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            onFocusLost = {
+                val token = tokenText.trim()
+                if (token != currentToken) {
+                    onSave(token)
+                }
+            }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedButton(
+            onClick = {
+                val token = tokenText.trim()
+                onSave(token)
+                verifying = true
+                verifyResultMsg = null
+                onVerify(token) { success, msg ->
+                    verifying = false
+                    verifySuccess = success
+                    verifyResultMsg = msg
+                }
+            },
+            enabled = !verifying,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(TouchTargetMin),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Security,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
             )
-            Text(
-                text = "模型: ${activeProvider.model}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        } else {
-            Text(
-                text = "未配置 AI 服务商",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error
-            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(if (verifying) "正在验证 Token..." else "保存并测试连接")
         }
-
-        AiProviderSettingsContent(
-            providers = providers,
-            activeProviderId = activeProviderId,
-            onAdd = { viewModel.addAiProvider(it) },
-            onActivate = { viewModel.setActiveProvider(it) },
-            onEdit = { viewModel.updateAiProvider(it) },
-            onDelete = { viewModel.deleteAiProvider(it) }
-        )
     }
 }

@@ -36,6 +36,8 @@ class CloudAiService(
     // 能力 = 用户显式开关 ∩ 模型级目录默认值（AI_Runtime Phase 6：能力跟模型走）
     override val capabilities = ModelCapabilityCatalog.resolve(config)
 
+    override val modelId: String get() = model
+
     private fun validateConfig() {
         if (config.baseUrl.isBlank() || config.model.isBlank()) {
             throw AiServiceException(AiErrorKind.NOT_CONFIGURED, "服务商配置不完整：地址或模型名为空")
@@ -68,7 +70,20 @@ class CloudAiService(
         tools: List<AiToolDefinition>?
     ): AiResponse = withContext(Dispatchers.IO) {
         try {
-            val requestBody = OpenAiRequestBuilder.build(gson, model, messages, systemPrompt, tools, stream = false)
+            val requestBody = OpenAiRequestBuilder.build(
+                gson = gson,
+                model = model,
+                messages = messages,
+                systemPrompt = systemPrompt,
+                tools = tools,
+                stream = false,
+                temperatureEnabled = config.temperatureEnabled,
+                temperature = config.temperature,
+                topPEnabled = config.topPEnabled,
+                topP = config.topP,
+                maxTokensEnabled = config.maxTokensEnabled,
+                maxTokens = config.maxTokens
+            )
             val url = "${config.baseUrl}/chat/completions"
 
             val request = Request.Builder()
@@ -136,7 +151,20 @@ class CloudAiService(
         tools: List<AiToolDefinition>?
     ): Flow<StreamChunk> = callbackFlow {
         validateConfig()
-        val requestBody = OpenAiRequestBuilder.build(gson, model, messages, systemPrompt, tools, stream = true)
+        val requestBody = OpenAiRequestBuilder.build(
+            gson = gson,
+            model = model,
+            messages = messages,
+            systemPrompt = systemPrompt,
+            tools = tools,
+            stream = true,
+            temperatureEnabled = config.temperatureEnabled,
+            temperature = config.temperature,
+            topPEnabled = config.topPEnabled,
+            topP = config.topP,
+            maxTokensEnabled = config.maxTokensEnabled,
+            maxTokens = config.maxTokens
+        )
         val request = Request.Builder()
             .url("${config.baseUrl}/chat/completions")
             .addHeader("Authorization", "Bearer ${config.apiKey}")
@@ -206,38 +234,101 @@ class CloudAiService(
         }
     }
 
-    suspend fun fetchModels(): List<String> = withContext(Dispatchers.IO) {
-        val endpoint = config.modelsEndpoint
-        if (endpoint.isBlank()) return@withContext emptyList()
-        try {
-            val request = Request.Builder()
-                .url(endpoint)
-                .addHeader("Authorization", "Bearer ${config.apiKey}")
-                .get()
-                .build()
+    suspend fun fetchModels(): List<String> = fetchModelsResult().getOrDefault(emptyList())
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return@withContext emptyList()
-
-            if (!response.isSuccessful) {
-                Log.w("CloudAiService", "Fetch models failed: ${response.code} $body")
-                return@withContext emptyList()
-            }
-
-            val json = JsonParser.parseString(body).asJsonObject
-            val data = json.getAsJsonArray("data") ?: return@withContext emptyList()
-
-            data.mapNotNull { element ->
-                try {
-                    element.asJsonObject.get("id")?.asString
-                } catch (e: Exception) {
-                    null
-                }
-            }.sorted()
-        } catch (e: Exception) {
-            Log.e("CloudAiService", "Fetch models failed", e)
-            emptyList()
+    /**
+     * 智能获取模型列表（参考 Operit ModelListFetcher）：
+     * 1. 自动从 baseUrl 推导模型列表端点（/v1/models 或 /models）；
+     * 2. 具备 404 智能 fallback 重试机制；
+     * 3. 兼容 OpenAI 格式（data[].id）与 Ollama 格式（models[].name / id）；
+     * 4. 返回强类型 Result，失败时携带具体 HTTP 状态码与错误信息。
+     */
+    suspend fun fetchModelsResult(): Result<List<String>> = withContext(Dispatchers.IO) {
+        val primaryEndpoint = config.resolveModelsEndpoint()
+        if (primaryEndpoint.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("请先填写有效的 Base URL"))
         }
+
+        val endpointsToTry = mutableListOf(primaryEndpoint)
+        val base = config.baseUrl.trim().trimEnd('/')
+        if (primaryEndpoint.endsWith("/v1/models")) {
+            endpointsToTry.add("$base/models")
+        } else if (primaryEndpoint.endsWith("/models") && !primaryEndpoint.endsWith("/v1/models")) {
+            endpointsToTry.add("$base/v1/models")
+        }
+
+        var lastErrorMsg = "获取模型列表失败"
+
+        for (endpoint in endpointsToTry) {
+            try {
+                val requestBuilder = Request.Builder().url(endpoint).get()
+                if (config.apiKey.isNotBlank()) {
+                    requestBuilder.addHeader("Authorization", "Bearer ${config.apiKey.trim()}")
+                }
+
+                val response = client.newCall(requestBuilder.build()).execute()
+                val body = response.body?.string().orEmpty()
+
+                if (response.code == 401 || response.code == 403) {
+                    return@withContext Result.failure(AiServiceException(AiErrorKind.AUTH_FAILED, "API Key 无效或未授权 (HTTP ${response.code})"))
+                }
+                if (response.code == 404) {
+                    lastErrorMsg = "模型列表端点不存在 (HTTP 404: $endpoint)"
+                    continue // 尝试下一个候选端点
+                }
+                if (!response.isSuccessful) {
+                    lastErrorMsg = "服务商返回错误 (HTTP ${response.code}): ${body.take(100)}"
+                    continue
+                }
+
+                val json = try {
+                    JsonParser.parseString(body).asJsonObject
+                } catch (e: Exception) {
+                    return@withContext Result.failure(AiServiceException(AiErrorKind.PARSE_ERROR, "返回数据非合法的 JSON: ${body.take(100)}"))
+                }
+
+                // 兼容 1: OpenAI 格式 {"data": [{"id": "..."}, ...]}
+                val dataArray = json.getAsJsonArray("data")
+                if (dataArray != null) {
+                    val list = dataArray.mapNotNull { elem ->
+                        try {
+                            elem.asJsonObject.get("id")?.asString
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }.filter { it.isNotBlank() }.distinct().sorted()
+
+                    if (list.isNotEmpty()) {
+                        return@withContext Result.success(list)
+                    }
+                }
+
+                // 兼容 2: Ollama 等格式 {"models": [{"name": "..."}, ...]}
+                val modelsArray = json.getAsJsonArray("models")
+                if (modelsArray != null) {
+                    val list = modelsArray.mapNotNull { elem ->
+                        try {
+                            val obj = elem.asJsonObject
+                            obj.get("name")?.asString ?: obj.get("id")?.asString
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }.filter { it.isNotBlank() }.distinct().sorted()
+
+                    if (list.isNotEmpty()) {
+                        return@withContext Result.success(list)
+                    }
+                }
+
+                return@withContext Result.failure(AiServiceException(AiErrorKind.PARSE_ERROR, "未识别到有效的模型列表数据结构 (data/models)"))
+            } catch (e: IOException) {
+                lastErrorMsg = networkErrorMessage(e)
+            } catch (e: Exception) {
+                lastErrorMsg = e.message ?: "未知网络错误"
+            }
+        }
+
+        Result.failure(AiServiceException(AiErrorKind.UNREACHABLE, lastErrorMsg))
     }
 
     // ─── 序列化/反序列化兼容怪癖已抽取至 OpenAiRequestBuilder（纯函数，带单测）───

@@ -139,6 +139,29 @@ class ToolCallStrategyTest {
         assertTrue(outcome is ToolCallOutcome.FinalAnswer)
     }
 
+    @Test
+    fun `JSON_端侧小模型原生call模板可解析为工具调用`() {
+        val outcome = extract("<|tool_call>call:query_records{\"limit\":5}<|tool_call_end>")
+        val calls = (outcome as ToolCallOutcome.ToolCalls).calls
+        assertEquals("query_records", calls[0].name)
+        assertEquals(5, calls[0].arguments.get("limit").asInt)
+        assertTrue(calls[0].id.startsWith("native_"))
+    }
+
+    @Test
+    fun `JSON_无标签前缀原生call模板也可解析`() {
+        val outcome = extract("call:list_sessions{}")
+        val calls = (outcome as ToolCallOutcome.ToolCalls).calls
+        assertEquals("list_sessions", calls[0].name)
+        assertTrue(calls[0].id.startsWith("native_"))
+    }
+
+    @Test
+    fun `JSON_残损原生工具标签判为畸形避免泄漏`() {
+        val outcome = extract("<|tool_call>call:query_records{broken json")
+        assertTrue(outcome is ToolCallOutcome.MalformedJson)
+    }
+
     // 工具参数构造辅助（防止以后误删导入）
     @Suppress("unused")
     private fun parseArgs(json: String): JsonObject = JsonParser.parseString(json).asJsonObject

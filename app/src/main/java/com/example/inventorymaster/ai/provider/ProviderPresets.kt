@@ -71,11 +71,11 @@ object ProviderPresets {
             )
         ),
         Preset(
-            name = "Gemma 4 E4B (本地)",
+            name = "Qwen3 4B (本地)",
             config = AiProviderConfig(
-                name = "Gemma 4 E4B",
+                name = "Qwen3 4B",
                 baseUrl = "",
-                model = "gemma-4-e4b",
+                model = "qwen3-4b-instruct-2507",
                 isLocal = true,
                 localModelPath = null
             )

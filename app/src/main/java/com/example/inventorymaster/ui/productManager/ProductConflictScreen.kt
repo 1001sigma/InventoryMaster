@@ -129,7 +129,7 @@ fun ConflictCard(item: ProductConflict, onToggle: (String) -> Unit) {
                     Text(
                         if (isOverwrite) "覆盖" else "忽略",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if(isOverwrite) MaterialTheme.colorScheme.primary else Color.Gray
+                        color = if(isOverwrite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Switch(
@@ -160,17 +160,17 @@ fun DiffRow(label: String, oldVal: String?, newVal: String?) {
     // 只有不同才显示
     if (o != n) {
         Column(modifier = Modifier.padding(vertical = 4.dp)) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 旧值：灰色+删除线
                 Text(
                     text = o.ifEmpty { "(空)" },
                     style = MaterialTheme.typography.bodySmall.copy(textDecoration = TextDecoration.LineThrough),
-                    color = Color.Gray,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )
 
-                Icon(Icons.Default.ArrowForward, null, Modifier.size(14.dp), tint = Color.LightGray)
+                Icon(Icons.Default.ArrowForward, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.outline)
 
                 // 新值：红色+加粗
                 Text(

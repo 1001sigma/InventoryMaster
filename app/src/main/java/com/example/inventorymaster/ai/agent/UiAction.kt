@@ -33,5 +33,16 @@ data class ExpiredProductCardData(
     val quantity: Double,
     val sessionId: String,
     /** 来源记录 ID（点击卡片打开编辑对话框用，v3 修复 recordId=0 TODO） */
-    val recordId: Long = 0
+    val recordId: Long = 0,
+    // 扩展字段（带默认值，保证 Room/Gson 反序列化向后兼容）
+    val sessionName: String = "",
+    val location: String = "",
+    val manufacturer: String = "",
+    val specification: String = "",
+    val unit: String = "件",
+    val isVerified: Boolean = false,
+    val productionDateStr: String = "",
+    val remarks: String = "",
+    val materialCode: String = "",
+    val di: String = ""
 )

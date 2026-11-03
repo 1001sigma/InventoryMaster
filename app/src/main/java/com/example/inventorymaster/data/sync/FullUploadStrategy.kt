@@ -69,6 +69,10 @@ class FullUploadStrategy(
             val response = retryPolicy.execute { api.uploadData(syncData) }
 
             if (response.isSuccessful) {
+                val allRecordIds = combinedList.map { it.record.id }
+                if (allRecordIds.isNotEmpty()) {
+                    stockRecordDao.markAsSynced(allRecordIds)
+                }
                 Result.success("上传成功！")
             } else {
                 Result.failure(Exception("服务器拒绝: ${response.code()}"))

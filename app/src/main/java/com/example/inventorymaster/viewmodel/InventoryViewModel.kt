@@ -8,35 +8,38 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.example.inventorymaster.InventoryApplication
+import com.example.inventorymaster.data.connection.DoorbellEvent
+import com.example.inventorymaster.data.connection.InventoryDoorbellClient
 import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.entity.ExpiryState
 import com.example.inventorymaster.data.entity.HighlightField
 import com.example.inventorymaster.data.entity.ProductBase
 import com.example.inventorymaster.data.entity.StockRecord
+import com.example.inventorymaster.data.entity.uncheck
+import com.example.inventorymaster.data.entity.StockRecordUiModel
 import com.example.inventorymaster.data.model.MappingTemplate
 import com.example.inventorymaster.data.model.StockRecordCombined
-import com.example.inventorymaster.data.entity.StockRecordUiModel
-import com.example.inventorymaster.data.model.ConflictAction
-import com.example.inventorymaster.data.model.ProductConflict
 import com.example.inventorymaster.data.repository.InventoryRepository
 import com.example.inventorymaster.utils.BatchCodeProcessor
+import com.example.inventorymaster.utils.DateUtils
 import com.example.inventorymaster.utils.ExcelUtils
 import com.example.inventorymaster.utils.Gs1Parser
 import com.example.inventorymaster.utils.MappingTemplateManager
 import com.example.inventorymaster.utils.ProductJsonUtils
-import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 import java.util.Date
 import java.util.Locale
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
-import java.time.temporal.ChronoUnit
+import java.util.UUID
 
 
 // 1. 定义 UI 状态
@@ -46,11 +49,11 @@ data class InventoryUiState(
     val isLoading: Boolean = false,
     val searchQuery: String = "",
     val productList: List<ProductBase> = emptyList(),
-    val conflictList: List<ProductConflict> = emptyList(),
+    val productCount: Int = 0,
+    val importSummary: String? = null,
     val isAnalyzing: Boolean = false,
     val userMessage: String? = null,
     val isBatchProcessorEnabled: Boolean = false,
-    val autoPushSessionId: Long? = null,
     // 👇 新增：DI 校验状态和错误列表
     val isDiValidationEnabled: Boolean = false, // 开关状态
     val invalidDiList: List<StockRecordCombined> = emptyList(), // 校验失败的清单，只要不为空，UI就弹窗
@@ -58,7 +61,18 @@ data class InventoryUiState(
     val isProductDeleteMode: Boolean = false,
     val selectedProductsForDelete: Set<String> = emptySet(),
     // Excel 映射模板
-    val mappingTemplates: List<MappingTemplate> = emptyList()
+    val mappingTemplates: List<MappingTemplate> = emptyList(),
+    // 近效期提醒天数
+    val nearExpiryThresholdDays: Int = 30,
+    // 记录卡片五个信息位的字段映射（设置 → 盘存设置 → 记录卡片样式）
+    val cardConfig: com.example.inventorymaster.data.model.RecordCardConfig = com.example.inventorymaster.data.model.RecordCardConfig(),
+    // 产品库导入诊断信息
+    val importDiagnostics: com.example.inventorymaster.data.model.ImportDiagnostics? = null,
+    // 服务器 Token 提示弹窗
+    val showTokenPrompt: Boolean = false,
+    val tokenPromptMessage: String? = null,
+    val sinkVerifiedItems: Boolean = false,
+    val emptySearchShowsNothing: Boolean = false
 )
 
 
@@ -71,19 +85,137 @@ class InventoryViewModel(
     private val _uiState = MutableStateFlow(InventoryUiState())
     private var pendingExcelProducts: List<ProductBase> = emptyList()
     private var pendingExcelRecords: List<StockRecord> = emptyList()
-    private var pendingImportProducts: List<ProductBase> = emptyList()
-    private val _searchQuery = MutableStateFlow("")
-    // 1. 在 ViewModel 顶部新增一个 StateFlow 来保存当前的搜索关键字
-    val searchQuery = _searchQuery.asStateFlow()
+    private var pendingImportItems: List<com.example.inventorymaster.data.model.ProductImportItem> = emptyList()
     val uiState: StateFlow<InventoryUiState> = _uiState.asStateFlow()
-    // 👇 新增 1：初始化时监听 DataStore
+
+    // M0 基建：盘库 WS 门铃（服务端数据变更 → 静默增量拉取；断线退化为手动下拉刷新）
+    private val doorbellClient = InventoryDoorbellClient(
+        (app as InventoryApplication).connectionManager,
+        settingsRepository
+    )
+    private var currentSessionUuid: String? = null
+    private var cachedOperatorName: String = ""  // M3：绑定的操作员姓名，落库归属用
+    private var doorbellPullInFlight = false
+    private var doorbellPullPending = false
+
+    // M0 修复：自动推送改为 VM 内防抖直推（原 UI 信号链路有两个丢包点：
+    // ① SyncViewModel.isSyncRunning 时意图被静默丢弃且不重试；② StateFlow 同值不发射，
+    // 快速连续查验时第二次设值不触发）。防抖合并连续操作，取消重启保证最后一次必定推送，
+    // 失败静默（下一次编辑重新调度，门铃/手动同步兜底）。
+    private var autoPushJob: Job? = null
+
+    private fun scheduleAutoPush(sessionId: Long) {
+        autoPushJob?.cancel()
+        autoPushJob = viewModelScope.launch {
+            delay(1000) // 防抖：连续查验/编辑合并为一次推送
+            repository.pushUnsyncedData(sessionId, userInitiated = false)
+                .onFailure { e ->
+                    // 本地状态滞后于服务端（任务实际仍待开始）→ 静默重拉对齐状态机落锁；
+                    // 本地脏记录保留，任务开始后随自动推送上行
+                    val code = (e as? com.example.inventorymaster.data.network.CollabApiException)?.code
+                    if (code == "TASK_NOT_STARTED") {
+                        silentDoorbellPull(sessionId)
+                    }
+                }
+            repository.reportPendingTaskStatuses()  // M5：同步成功后补报归档
+        }
+    }
+
+    // 👇 新增 1：初始化时监听 DataStore + 加载产品总数
     init {
         viewModelScope.launch {
+            val count = repository.getProductCount()
+            _uiState.value = _uiState.value.copy(productCount = count)
+        }
+        viewModelScope.launch {
             settingsRepository.settingsFlow.collect { settings ->
-                _uiState.value = _uiState.value.copy(isDiValidationEnabled = settings.enableDiValidation)
+                val sinkChanged = _uiState.value.sinkVerifiedItems != settings.sinkVerifiedItems
+                val emptySearchChanged = _uiState.value.emptySearchShowsNothing != settings.emptySearchShowsNothing
+                val currentResults = _uiState.value.searchResults
+                val newResults = if (sinkChanged && currentResults.isNotEmpty()) {
+                    sortSearchResults(currentResults, settings.sinkVerifiedItems)
+                } else {
+                    currentResults
+                }
+                _uiState.value = _uiState.value.copy(
+                    searchResults = newResults,
+                    isDiValidationEnabled = settings.enableDiValidation,
+                    nearExpiryThresholdDays = settings.nearExpiryThresholdDays,
+                    cardConfig = settings.recordCardConfig,
+                    isBatchProcessorEnabled = settings.enableHybiomeMode,
+                    sinkVerifiedItems = settings.sinkVerifiedItems,
+                    emptySearchShowsNothing = settings.emptySearchShowsNothing
+                )
+                cachedOperatorName = settings.operatorName  // M3：绑定操作员（R1）
+
+                // 如果空搜索不显示设置发生切换且当前搜索框为空，重新执行一次搜索以同步最新状态
+                if (emptySearchChanged && _uiState.value.searchQuery.isBlank() && _uiState.value.currentSessionId != null) {
+                    performSearch("", isInventoryMode = true, silent = true)
+                }
+            }
+        }
+        // M5：启动时补报离线队列中的归档上报
+        viewModelScope.launch { repository.reportPendingTaskStatuses() }
+        viewModelScope.launch {
+            doorbellClient.events.collect { onDoorbellEvent(it) }
+        }
+        viewModelScope.launch {
+            settingsRepository.settingsFlow.collect {
+                doorbellClient.setEnabled(it.inventoryPushEnabled)
+                if (it.inventoryPushEnabled && _uiState.value.currentSessionId != null) {
+                    doorbellClient.ensureConnected()
+                }
             }
         }
     }
+
+    private fun onDoorbellEvent(e: DoorbellEvent) {
+        when (e) {
+            is DoorbellEvent.DataChanged -> {
+                // 只刷新当前打开的任务；其他任务的变更等用户进入时经全量下载/拉取对齐
+                if (e.sessionUuid == currentSessionUuid) {
+                    _uiState.value.currentSessionId?.let { silentDoorbellPull(it) }
+                }
+            }
+            is DoorbellEvent.SessionChanged -> {
+                // M6：任务生命周期变化（开始/归档）→ 本地存在该任务则静默拉取对齐状态
+                viewModelScope.launch {
+                    val local = repository.getSessionByUuid(e.sessionUuid)
+                    if (local != null) silentDoorbellPull(local.id)
+                }
+            }
+        }
+    }
+
+    /** 门铃触发的静默拉取：userInitiated=false（失败不弹发现弹窗），防重入合并 */
+    private fun silentDoorbellPull(sessionId: Long) {
+        if (doorbellPullInFlight) {
+            doorbellPullPending = true
+            return
+        }
+        doorbellPullInFlight = true
+        viewModelScope.launch {
+            try {
+                do {
+                    doorbellPullPending = false
+                    val pullResult = repository.pullNewData(sessionId, userInitiated = false)
+                    repository.reportPendingTaskStatuses()  // M5：拉取成功后补报
+                    // searchResults 是一次性快照，拉到数据后静默重建列表（别人推的记录即刻上屏且带徽标）
+                    if (pullResult.isSuccess) {
+                        performSearch(_uiState.value.searchQuery, isInventoryMode = true, silent = true)
+                    }
+                } while (doorbellPullPending)
+            } finally {
+                doorbellPullInFlight = false
+            }
+        }
+    }
+
+    override fun onCleared() {
+        doorbellClient.close()
+        super.onCleared()
+    }
+
     // 👇 新增 2：供 UI 调用的开关切换方法
     fun toggleDiValidation(enabled: Boolean) {
         viewModelScope.launch {
@@ -93,21 +225,23 @@ class InventoryViewModel(
 
 
     fun toggleBatchProcessor(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.updateHybiomeMode(enabled)
+        }
         _uiState.value = _uiState.value.copy(isBatchProcessorEnabled = enabled)
 
-        // [可选优化]：用户切换开关时，如果搜索框里已经有字了，要不要立即重新搜索？
-        // 如果想立即刷新结果，加上这句：
         val currentQuery = _uiState.value.searchQuery
         if (currentQuery.isNotBlank()) {
-            performSearch(currentQuery, isInventoryMode = true) // 这里的参数根据你的实际情况传
+            performSearch(currentQuery, isInventoryMode = true)
         }
     }
 
 
     // --- 核心搜索逻辑 ---
-    fun performSearch(query: String, isInventoryMode: Boolean) {
+    // silent=true 供门铃静默拉取后重建列表用：不弹全屏 loading，仅更新结果
+    fun performSearch(query: String, isInventoryMode: Boolean, silent: Boolean = false) {
         val cleanQuery = query.trim()
-        _uiState.value = _uiState.value.copy(isLoading = true, searchQuery = cleanQuery)
+        _uiState.value = _uiState.value.copy(isLoading = !silent, searchQuery = cleanQuery)
         val useSmartBatch = _uiState.value.isBatchProcessorEnabled
 
         viewModelScope.launch {
@@ -118,31 +252,64 @@ class InventoryViewModel(
                     return@launch
                 }
 
-                val scanResult = Gs1Parser.parse(cleanQuery)
-                val processedBatch = BatchCodeProcessor.process(cleanQuery)
-                val results =
-                    if (useSmartBatch) {
-                        repository.getRecordsBybatchorexpiryDate(sessionId,processedBatch)
-                    } else if (scanResult.isUdi && !scanResult.di.isNullOrBlank()) {
-                        val productKey = scanResult.di!!
-                        val batch = scanResult.batch
-                        if (!batch.isNullOrBlank()) {
-                            val byUdi = repository.getRecordsByUdi(sessionId, productKey, batch)
-                            if (byUdi.isEmpty()) {
-                                repository.getRecordsBybatchorexpiryDate(sessionId,batch)
-                            } else {
-                                repository.getRecordsByKey(sessionId, productKey)
-                            }
-                        } else {
-                        repository.getRecordsByKey(sessionId, productKey)
+                val results = if (cleanQuery.isBlank()) {
+                    if (_uiState.value.emptySearchShowsNothing) {
+                        // 开关开启：空搜索不显示任何数据
+                        emptyList()
+                    } else {
+                        // 空查询 = 全部记录（进入任务页/清空搜索时全量上屏，且带效期徽标）
+                        repository.getSessionRecords(sessionId)
                     }
                 } else {
-                    repository.searchRecords(sessionId, cleanQuery)
+                    // 1. 智能长光条码识别（若开启且符合长光特征）：提取 8 位批号优先检索
+                    val hybiomeBatch = if (useSmartBatch && BatchCodeProcessor.isHybiomeBarcode(cleanQuery)) {
+                        BatchCodeProcessor.extractBatch(cleanQuery)
+                    } else null
+
+                    val hybiomeResults = if (!hybiomeBatch.isNullOrBlank()) {
+                        val exactBatch = repository.getRecordsBybatchorexpiryDate(sessionId, hybiomeBatch)
+                        if (exactBatch.isNotEmpty()) {
+                            exactBatch
+                        } else {
+                            repository.searchRecords(sessionId, hybiomeBatch)
+                        }
+                    } else {
+                        emptyList()
+                    }
+
+                    // 命中了长光批号则直接返回；若未命中则智能平滑降级走常规流程（保证正常 GS1/品名/编码等不被误杀）
+                    if (hybiomeResults.isNotEmpty()) {
+                        hybiomeResults
+                    } else {
+                        val scanResult = Gs1Parser.parse(cleanQuery)
+                        if (scanResult.isUdi && !scanResult.di.isNullOrBlank()) {
+                            val di = scanResult.di!!
+                            val batch = scanResult.batch
+                            // 组合键下同 DI 可对应多条产品（物料编码不同），按产品表 di 字段 JOIN 全部查出
+                            if (!batch.isNullOrBlank()) {
+                                val byDiBatch = repository.getRecordsByDiAndBatch(sessionId, di, batch)
+                                if (byDiBatch.isEmpty()) {
+                                    repository.getRecordsBybatchorexpiryDate(sessionId, batch)
+                                } else {
+                                    repository.getRecordsByDi(sessionId, di)
+                                }
+                            } else {
+                                repository.getRecordsByDi(sessionId, di)
+                            }
+                        } else {
+                            // 非 UDI 输入：组合键 / DI / 物料编码 任一精确命中（扫码/粘贴场景），
+                            // 未命中再走多字段模糊（品名/厂家/库位/批号/规格/型号/备注…）
+                            val exact = repository.getRecordsByKeyOrDiOrMat(sessionId, cleanQuery)
+                            if (exact.isNotEmpty()) exact
+                            else repository.searchRecords(sessionId, cleanQuery)
+                        }
+                    }
                 }
 
-                val uiList = mapToUiModels(results, query)
+                val uiList = mapToUiModels(results, cleanQuery, _uiState.value.nearExpiryThresholdDays)
+                val sortedList = sortSearchResults(uiList, _uiState.value.sinkVerifiedItems)
                 _uiState.value = _uiState.value.copy(
-                    searchResults = uiList,
+                    searchResults = sortedList,
                     isLoading = false
                 )
             } catch (e: Exception) {
@@ -155,14 +322,24 @@ class InventoryViewModel(
     // =========================================================================
     // 🔥 [核心修改区域] 增删改查 (自动填充同步字段)
     // =========================================================================
+    fun sortSearchResults(
+        list: List<StockRecordUiModel>,
+        sinkVerified: Boolean
+    ): List<StockRecordUiModel> {
+        return if (sinkVerified) {
+            list.sortedWith(compareBy({ it.combined.record.isVerified }, { it.combined.record.id }))
+        } else {
+            list.sortedBy { it.combined.record.id }
+        }
+    }
+
     // 在 ViewModel 中添加这个私有函数
     private fun mapToUiModels(
         dbResults: List<StockRecordCombined>,
-        query: String
+        query: String,
+        nearExpiryThresholdDays: Int = 30
     ): List<StockRecordUiModel> {
         val today = LocalDate.now()
-        // 假设你的 Long 型日期存的是类似 20251231 格式，如果是 YYMMDD (如 251231)，请将 pattern 改为 "yyMMdd"
-        val dateFormatter = DateTimeFormatter.ofPattern("yyMMdd")
 
         return dbResults.map { combined ->
             val record = combined.record
@@ -173,44 +350,34 @@ class InventoryViewModel(
                 query.isBlank() -> HighlightField.NONE
                 product?.productName?.contains(query, ignoreCase = true) == true -> HighlightField.PRODUCT_NAME
                 record.batchNumber.contains(query, ignoreCase = true) -> HighlightField.BATCH_NUMBER
-                record.productKey.contains(query, ignoreCase = true) -> HighlightField.DI
+                // 按 DI 字段判断，避免组合键误命中物料编码段
+                product?.di?.contains(query, ignoreCase = true) == true -> HighlightField.DI
+                product?.materialCode?.contains(query, ignoreCase = true) == true -> HighlightField.DI
                 record.location.contains(query, ignoreCase = true) -> HighlightField.LOCATION
                 else -> HighlightField.NONE
             }
 
-            // 2. 计算效期状态
+            // 2. 计算效期状态（DateUtils.toLocalDate 与显示端同一套形态判定：
+            //    毫秒时间戳/8位/6位，GS1 日=00 按月末；解析失败为 null → 正常，不抛异常）
             var expiryState = ExpiryState.NORMAL
-            try {
-                val expiryStr = record.expiryDate.toString()
+            val expiryDateObj = DateUtils.toLocalDate(record.expiryDate)
+            if (expiryDateObj != null) {
+                val remainingDays = ChronoUnit.DAYS.between(today, expiryDateObj)
 
-                // 确保效期格式正确才能计算
-                if (expiryStr.length == 8) {
-                    val expiryDateObj = LocalDate.parse(expiryStr, dateFormatter)
-                    // 剩余天数 = 效期 - 今天
-                    val remainingDays = ChronoUnit.DAYS.between(today, expiryDateObj)
+                // 如果有生产日期，计算总效期天数
+                val prodDateObj = DateUtils.toLocalDate(record.productionDate)
+                val totalDays = prodDateObj?.let { ChronoUnit.DAYS.between(it, expiryDateObj) }
 
-                    // 如果有生产日期，计算总效期天数
-                    val prodStr = record.productionDate?.toString()
-                    val totalDays = if (!prodStr.isNullOrEmpty() && prodStr.length == 8) {
-                        val prodDateObj = LocalDate.parse(prodStr, dateFormatter)
-                        ChronoUnit.DAYS.between(prodDateObj, expiryDateObj)
-                    } else {
-                        null
-                    }
+                // 近效期规则判断
+                val isNearExpiryByDays = remainingDays in 0..nearExpiryThresholdDays.toLong()
+                // 规则a：剩余时间 < 总有效时间的 25%
+                val isNearExpiryByRatio = totalDays != null && totalDays > 0 && remainingDays < (totalDays * 0.25)
 
-                    // 近效期规则判断
-                    val isNearExpiryByDays = remainingDays in 0..30
-                    // 规则a：剩余时间 < 总有效时间的 25% (必须有总天数且大于0才能按比例算)
-                    val isNearExpiryByRatio = totalDays != null && totalDays > 0 && remainingDays < (totalDays * 0.25)
-
-                    expiryState = when {
-                        remainingDays < 0 -> ExpiryState.EXPIRED // 已经过期
-                        isNearExpiryByDays || isNearExpiryByRatio -> ExpiryState.NEAR_EXPIRY // 满足任意近效期条件
-                        else -> ExpiryState.NORMAL
-                    }
+                expiryState = when {
+                    remainingDays < 0 -> ExpiryState.EXPIRED
+                    isNearExpiryByDays || isNearExpiryByRatio -> ExpiryState.NEAR_EXPIRY
+                    else -> ExpiryState.NORMAL
                 }
-            } catch (e: Exception) {
-                // 解析失败（比如初始值为0）则默认为正常，防止崩溃
             }
 
             // 组装并返回
@@ -228,7 +395,8 @@ class InventoryViewModel(
      */
     private fun prepareRecordForSync(record: StockRecord, logAction: String): StockRecord {
         val now = System.currentTimeMillis()
-        val operatorName = "手机端" // 后续可从 Settings 获取
+        // M3（R1）：优先使用绑定的操作员姓名；未绑定时回落"手机端"
+        val operatorName = cachedOperatorName.ifBlank { "手机端" }
         val deviceModel = android.os.Build.MODEL // 获取手机型号，如 "Xiaomi 13"
         val timeStr = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(now))
 
@@ -255,6 +423,7 @@ class InventoryViewModel(
             val syncedRecord = prepareRecordForSync(record, "扫码新增: 数量=${record.quantity}")
 
             repository.saveRecord(syncedRecord)
+            scheduleAutoPush(record.sessionId)
 
             val currentQuery = _uiState.value.searchQuery
             performSearch(currentQuery, isInventoryMode = true)
@@ -265,22 +434,35 @@ class InventoryViewModel(
     fun updateRecord(record: StockRecord) {
         viewModelScope.launch {
             // 🔥 自动填充同步字段
-            // 注意：这里简单记录了"手动修改"，如果需要更详细的 Diff (如 1->5)，需要在 UI 层传进来或者先查库对比
-            // 1. 准备数据：利用 copy() 强制标记为脏数据
-            // 不管之前 prepareRecordForSync 做了什么，这里必须确保 syncStatus = 1
             val recordToSave = record.copy(
                 syncStatus = 1, // 🚩 关键！标记为未同步
                 lastUpdateTime = System.currentTimeMillis(),
-                // 更新时间戳
-                // 如果 prepareRecordForSync 里有特殊备注逻辑，可以在这里把 remarks = ... 加上
             )
             repository.updateRecord(recordToSave)
-            _uiState.value = _uiState.value.copy(autoPushSessionId = record.sessionId)
-            val currentQuery = _uiState.value.searchQuery
-            performSearch(currentQuery, isInventoryMode = false)
+            scheduleAutoPush(record.sessionId)
 
-            // 5. (可选) 给用户一个轻提示
-            //_syncMessage.value = "保存成功，正在同步..."
+            // 内存原地局部刷新：保持视图位置稳定，若开启自动沉底则按状态重排
+            val currentList = _uiState.value.searchResults
+            val hasItem = currentList.any { it.combined.record.id == recordToSave.id }
+            if (hasItem) {
+                val updatedList = currentList.map { uiModel ->
+                    if (uiModel.combined.record.id == recordToSave.id) {
+                        val updatedCombined = uiModel.combined.copy(record = recordToSave)
+                        uiModel.copy(combined = updatedCombined)
+                    } else {
+                        uiModel
+                    }
+                }
+                val finalList = if (_uiState.value.sinkVerifiedItems) {
+                    sortSearchResults(updatedList, true)
+                } else {
+                    updatedList
+                }
+                _uiState.value = _uiState.value.copy(searchResults = finalList)
+            } else {
+                val currentQuery = _uiState.value.searchQuery
+                performSearch(currentQuery, isInventoryMode = false, silent = true)
+            }
         }
     }
 
@@ -299,22 +481,18 @@ class InventoryViewModel(
     fun quickCheck(combined: StockRecordCombined) {
         viewModelScope.launch {
             val record = combined.record
-            // 1. 业务逻辑：修改备注和实际数量
-            val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(record.lastUpdateTime)
-            val appendText = "已查验[$time]${record.operator};"
-            val newRemarks = if (record.remarks.isNullOrBlank()) appendText else "$appendText ${record.remarks} "
-
-            // 构造业务变更后的对象
+            val now = System.currentTimeMillis()
+            // 构造业务变更后的对象：标记查验，自动将实盘数量对齐账面数量
             val businessUpdatedRecord = record.copy(
-                actualQuantity = record.quantity, //自动填充同步字段
-                remarks = newRemarks,
+                isVerified = true,
+                actualQuantity = record.quantity,
                 syncStatus = 1,                   // 🚩 标记脏数据
-                lastUpdateTime = record.lastUpdateTime
+                lastUpdateTime = now
             )
             // 3. 保存
             repository.updateRecord(businessUpdatedRecord)
-            //立即触发上传
-            _uiState.value = _uiState.value.copy(autoPushSessionId = record.sessionId)
+            // 立即调度自动推送（防抖合并连续查验）
+            scheduleAutoPush(record.sessionId)
             // 4. 原地刷新 UI
             val currentList = _uiState.value.searchResults
             val newList = currentList.map { uiModel ->
@@ -328,33 +506,44 @@ class InventoryViewModel(
                     uiModel
                 }
             }
-            _uiState.value = _uiState.value.copy(searchResults = newList)
+            val finalList = if (_uiState.value.sinkVerifiedItems) {
+                sortSearchResults(newList, true)
+            } else {
+                newList
+            }
+            _uiState.value = _uiState.value.copy(searchResults = finalList)
         }
     }
 
-    fun clearAutoPushSignal() {
-        _uiState.value = _uiState.value.copy(autoPushSessionId = null)
+    // 5. 撤销查验（方案 1-B 与弹窗联动，自动安全备份实盘数据到备注）
+    fun cancelVerification(combined: StockRecordCombined) {
+        viewModelScope.launch {
+            val record = combined.record
+            val businessUpdatedRecord = record.uncheck()
+            repository.updateRecord(businessUpdatedRecord)
+            scheduleAutoPush(record.sessionId)
+            val currentList = _uiState.value.searchResults
+            val newList = currentList.map { uiModel ->
+                if (uiModel.combined.record.id == record.id) {
+                    val updatedCombined = uiModel.combined.copy(record = businessUpdatedRecord)
+                    uiModel.copy(combined = updatedCombined)
+                } else {
+                    uiModel
+                }
+            }
+            val finalList = if (_uiState.value.sinkVerifiedItems) {
+                sortSearchResults(newList, true)
+            } else {
+                newList
+            }
+            _uiState.value = _uiState.value.copy(searchResults = finalList)
+        }
     }
 
     // =========================================================================
 
-    //region--- 导入导出 ---
-//    fun importExcelData(sessionId: Long, products: List<ProductBase>, records: List<StockRecord>) {
-//        viewModelScope.launch {
-//            _uiState.value = _uiState.value.copy(isLoading = true)
-//            try {
-//                repository.importExcelData(sessionId, products, records)
-//                _uiState.value = _uiState.value.copy(isLoading = false, searchResults = emptyList())
-//            } catch (e: Exception) {
-//                e.printStackTrace()
-//                _uiState.value = _uiState.value.copy(isLoading = false)
-//            }
-//        }
-//    }
-    //endregion
-
     // 导入逻辑
-    fun importExcelFile(context: Context, uri: Uri, sessionId: Long,isDiValidationEnabled: Boolean = false) {
+    fun importExcelFile(context: Context, uri: Uri, sessionId: Long) {
         // 开启一个协程，指定在 IO 线程运行
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -491,6 +680,11 @@ class InventoryViewModel(
             searchResults = emptyList(),
             searchQuery = ""
         )
+        viewModelScope.launch {
+            // M0：缓存任务 uuid（门铃事件按 uuid 过滤）并建立长连接
+            currentSessionUuid = repository.getSessionById(sessionId)?.uuid
+            doorbellClient.ensureConnected()
+        }
     }
 
     // 新增：清空搜索结果的通用方法
@@ -525,7 +719,9 @@ class InventoryViewModel(
             _uiState.value = _uiState.value.copy(isLoading = true)
             try {
                 val list = if (query.isBlank()) {
-                    emptyList()
+                    val count = repository.getProductCount()
+                    _uiState.value = _uiState.value.copy(productCount = count, productList = emptyList(), isLoading = false)
+                    return@launch
                 } else {
                     repository.searchProducts(query)
                 }
@@ -537,77 +733,85 @@ class InventoryViewModel(
         }
     }
 
-    // 更新产品信息
-    fun updateProductBase(product: ProductBase) {
+    // 更新产品信息（支持 key 热更新）
+    fun updateProductBase(oldKey: String, product: ProductBase) {
         viewModelScope.launch {
-            repository.updateProduct(product)
-            val currentList = _uiState.value.productList.map {
-                if (it.productKey == product.productKey) product else it
+            val oldProduct = repository.getProductByKey(oldKey)
+            if (oldProduct != null) {
+                val newDi = product.di?.trim()
+                val newMatCode = product.materialCode?.trim()
+                val newKey = ProductBase.computeProductKey(newDi, newMatCode)
+                if (newKey != oldKey) {
+                    val result = repository.migrateProductKey(oldKey, product.copy(productKey = newKey))
+                    if (result.isFailure) {
+                        _uiState.value = _uiState.value.copy(userMessage = result.exceptionOrNull()?.message ?: "更新失败")
+                        return@launch
+                    }
+                } else {
+                    repository.updateProduct(product)
+                }
+            } else {
+                _uiState.value = _uiState.value.copy(userMessage = "未找到原始产品记录")
             }
-            _uiState.value = _uiState.value.copy(productList = currentList)
+            val query = _uiState.value.searchQuery
+            searchProducts(query)
         }
     }
 
-    // A. 解析 Excel
+    // =========================================================================
+    // 统一的导入与解析逻辑 (盘点单 & 产品库)
+    // =========================================================================
+
+    // A. 解析 Excel (盘点单导入保留入口)
     fun analyzeExcelImport(products: List<ProductBase>, records: List<StockRecord>) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isAnalyzing = true)
-            pendingExcelProducts = products
-            pendingExcelRecords = records
-            val conflicts = repository.checkProductConflicts(products)
-            if (conflicts.isEmpty()) {
-                repository.saveImportDataWithResolution(products, records)
-                _uiState.value = _uiState.value.copy(isAnalyzing = false)
-            } else {
-                _uiState.value = _uiState.value.copy(
-                    conflictList = conflicts,
-                    isAnalyzing = false
-                )
-            }
+            // 盘点导入不修改产品库：仓库层按组合键/DI/物料编码挂靠已有产品，未命中才兜底新增，
+            // 因此不再需要「检测到产品变更」确认弹窗
+            val insertedCount = repository.saveImportDataWithResolution(products, records)
+            _uiState.value = _uiState.value.copy(
+                isAnalyzing = false,
+                userMessage = if (insertedCount > 0) "导入成功，$insertedCount 条未匹配产品已新增至产品库" else "导入成功"
+            )
         }
     }
 
-    fun setAllConflictsAction(action: ConflictAction) {
-        val current = _uiState.value.conflictList
-        val updated = current.map { it.copy(resolveAction = action) }
-        _uiState.value = _uiState.value.copy(conflictList = updated)
-    }
-
-    fun toggleConflictAction(productKey: String) {
-        val current = _uiState.value.conflictList
-        val updated = current.map {
-            if (it.productKey == productKey) {
-                val nextAction = if (it.resolveAction == ConflictAction.OVERWRITE) ConflictAction.IGNORE else ConflictAction.OVERWRITE
-                it.copy(resolveAction = nextAction)
-            } else it
-        }
-        _uiState.value = _uiState.value.copy(conflictList = updated)
-    }
-
-    fun confirmConflictResolution() {
+    // 统一的确认导入逻辑 (彻底无脑按 Excel 覆盖)
+    fun confirmImport() {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isAnalyzing = true)
-            val conflicts = _uiState.value.conflictList
-            val finalProducts = pendingExcelProducts.toMutableList()
+            _uiState.value = _uiState.value.copy(isAnalyzing = true, importSummary = null, importDiagnostics = null)
 
-            for (conflict in conflicts) {
-                if (conflict.resolveAction == ConflictAction.IGNORE) {
-                    val index = finalProducts.indexOfFirst { it.productKey == conflict.productKey }
-                    if (index != -1) {
-                        finalProducts[index] = conflict.oldProduct
-                    }
-                }
+            // 1. 如果是【盘点单】导入有数据，保存盘点单和产品
+            if (pendingExcelProducts.isNotEmpty() || pendingExcelRecords.isNotEmpty()) {
+                repository.saveImportDataWithResolution(pendingExcelProducts, pendingExcelRecords)
+                pendingExcelProducts = emptyList()
+                pendingExcelRecords = emptyList()
             }
-            repository.saveImportDataWithResolution(finalProducts, pendingExcelRecords)
-            _uiState.value = _uiState.value.copy(conflictList = emptyList(), isAnalyzing = false)
+
+            // 2. 如果是【独立产品库】导入有数据，走新写的主键转移保存逻辑
+            if (pendingImportItems.isNotEmpty()) {
+                repository.saveProductsOnly(pendingImportItems)
+                pendingImportItems = emptyList()
+            }
+
+            _uiState.value = _uiState.value.copy(isAnalyzing = false, userMessage = "数据导入完成")
+
+            // 刷新列表 (兼顾两个界面的搜索刷新)
+            val query = _uiState.value.searchQuery
+            searchProducts(query)
+            performSearch(query, isInventoryMode = true)
         }
     }
 
+    // 统一的取消导入逻辑
     fun cancelImport() {
-        _uiState.value = _uiState.value.copy(conflictList = emptyList(), isAnalyzing = false)
+        _uiState.value = _uiState.value.copy(importSummary = null, importDiagnostics = null, isAnalyzing = false)
         pendingExcelProducts = emptyList()
         pendingExcelRecords = emptyList()
+        pendingImportItems = emptyList()
     }
+
+
 
     // =========================================================================
     // region 产品库导入导出 (Product-only, 不绑定 Session)
@@ -616,74 +820,61 @@ class InventoryViewModel(
     fun importProductsFromFile(context: Context, uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val mimeType = context.contentResolver.getType(uri) ?: ""
-                val fileName = uri.lastPathSegment ?: ""
-                val products: List<ProductBase> = when {
-                    mimeType.contains("json") || fileName.endsWith(".json") -> {
-                        context.contentResolver.openInputStream(uri)?.use { stream ->
-                            ProductJsonUtils.importFromJson(stream)
-                        } ?: emptyList()
-                    }
-                    else -> {
-                        val result = ExcelUtils.parseExcel(context, uri, 0)
-                        result.products
-                    }
-                }
-
-                if (products.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        _uiState.value = _uiState.value.copy(userMessage = "未解析到任何产品数据")
-                    }
+                if (repository.hasOngoingSessions()) {
+                    withContext(Dispatchers.Main) { _uiState.value = _uiState.value.copy(userMessage = "存在进行中的盘点任务，禁止修改产品库") }
                     return@launch
                 }
+                val mimeType = context.contentResolver.getType(uri) ?: ""
+                val fileName = uri.lastPathSegment ?: ""
+                val result = when {
+                    mimeType.contains("json") || fileName.endsWith(".json") -> {
+                        val items = context.contentResolver.openInputStream(uri)?.use { stream ->
+                            ProductJsonUtils.importFromJson(stream)
+                        } ?: emptyList()
+                        Pair(items, com.example.inventorymaster.data.model.ImportDiagnostics())
+                    }
+                    else -> {
+                        // 【重点】使用我们新建的，只针对字典的解析器
+                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                            com.example.inventorymaster.utils.SimpleProductExcelHelper.importProductsFromExcel(stream)
+                        } ?: Pair(emptyList(), com.example.inventorymaster.data.model.ImportDiagnostics())
+                    }
+                }
 
-                analyzeProductsImport(products)
+                val (items, diagnostics) = result
+                if (items.isEmpty()) {
+                    withContext(Dispatchers.Main) { _uiState.value = _uiState.value.copy(userMessage = "未解析到有效数据，请检查必填项") }
+                    return@launch
+                }
+                analyzeProductsImport(items, diagnostics)
             } catch (e: Exception) {
-                e.printStackTrace()
-                withContext(Dispatchers.Main) {
-                    _uiState.value = _uiState.value.copy(userMessage = "导入失败: ${e.message}")
-                }
+                withContext(Dispatchers.Main) { _uiState.value = _uiState.value.copy(userMessage = "导入失败: ${e.message}") }
             }
         }
     }
 
-    private suspend fun analyzeProductsImport(products: List<ProductBase>) {
+    private suspend fun analyzeProductsImport(
+        items: List<com.example.inventorymaster.data.model.ProductImportItem>,
+        diagnostics: com.example.inventorymaster.data.model.ImportDiagnostics = com.example.inventorymaster.data.model.ImportDiagnostics()
+    ) {
         _uiState.value = _uiState.value.copy(isAnalyzing = true)
-        pendingImportProducts = products
-        val conflicts = repository.checkProductConflicts(products)
-        if (conflicts.isEmpty()) {
-            repository.saveProductsOnly(products)
-            _uiState.value = _uiState.value.copy(isAnalyzing = false, userMessage = "成功导入 ${products.size} 条产品")
+        pendingImportItems = items
+        val summary = repository.checkProductConflicts(items)
+
+        if (summary == null && !diagnostics.hasIssues) {
+            // 没有变动，也没有诊断问题，直接保存
+            repository.saveProductsOnly(items)
+            pendingImportItems = emptyList()
+            _uiState.value = _uiState.value.copy(isAnalyzing = false, userMessage = "导入完成")
         } else {
-            _uiState.value = _uiState.value.copy(conflictList = conflicts, isAnalyzing = false)
-        }
-    }
-
-    fun confirmProductsResolution() {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isAnalyzing = true)
-            val conflicts = _uiState.value.conflictList
-            val finalProducts = pendingImportProducts.toMutableList()
-
-            for (conflict in conflicts) {
-                if (conflict.resolveAction == ConflictAction.IGNORE) {
-                    val index = finalProducts.indexOfFirst { it.productKey == conflict.productKey }
-                    if (index != -1) finalProducts[index] = conflict.oldProduct
-                }
-            }
-            repository.saveProductsOnly(finalProducts)
+            // 有变动或有诊断问题，触发 UI 弹窗
+            val displaySummary = summary ?: "未发现与现有产品库的冲突，但存在以下数据问题："
             _uiState.value = _uiState.value.copy(
-                conflictList = emptyList(),
-                isAnalyzing = false,
-                userMessage = "成功导入 ${finalProducts.size} 条产品"
+                importSummary = displaySummary,
+                importDiagnostics = if (diagnostics.hasIssues) diagnostics else null,
+                isAnalyzing = false
             )
-            pendingImportProducts = emptyList()
         }
-    }
-
-    fun cancelProductsImport() {
-        _uiState.value = _uiState.value.copy(conflictList = emptyList(), isAnalyzing = false)
-        pendingImportProducts = emptyList()
     }
 
     fun exportProductsToExcelFile(context: Context, uri: Uri) {
@@ -691,7 +882,7 @@ class InventoryViewModel(
             try {
                 val products = repository.getAllProducts()
                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                    ExcelUtils.exportProductsToExcel(outputStream, products)
+                    com.example.inventorymaster.utils.SimpleProductExcelHelper.exportProductsToExcel(outputStream, products)
                 }
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(userMessage = "已导出 ${products.size} 条产品")
@@ -724,6 +915,75 @@ class InventoryViewModel(
         }
     }
 
+    /**
+     * 从服务器增量/全量同步产品库（含金蝶物料主档）
+     */
+    fun syncProductLibrary(userInitiated: Boolean = true, forceFull: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentToken = settingsRepository.getServerToken()
+            if (currentToken.isBlank()) {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        showTokenPrompt = true,
+                        tokenPromptMessage = "首次同步需配置服务端认证 Token（可在服务端启动控制台查看）"
+                    )
+                }
+                return@launch
+            }
+
+            _uiState.value = _uiState.value.copy(isLoading = true)
+            val result = repository.pullProductLibrary(userInitiated, forceFull)
+            val newCount = repository.getProductCount()
+            val currentQuery = _uiState.value.searchQuery
+            val updatedList = if (currentQuery.isNotBlank()) {
+                repository.searchProducts(currentQuery)
+            } else {
+                emptyList()
+            }
+            withContext(Dispatchers.Main) {
+                result.fold(
+                    onSuccess = { msg ->
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            productCount = newCount,
+                            productList = updatedList,
+                            userMessage = msg
+                        )
+                    },
+                    onFailure = { err ->
+                        val errMsg = err.message ?: ""
+                        if (errMsg.contains("401") || errMsg.contains("未授权") || errMsg.contains("Token 无效")) {
+                            _uiState.value = _uiState.value.copy(
+                                isLoading = false,
+                                showTokenPrompt = true,
+                                tokenPromptMessage = "Token 无效或未授权 (401)，请重新输入服务端 Token"
+                            )
+                        } else {
+                            _uiState.value = _uiState.value.copy(
+                                isLoading = false,
+                                userMessage = "同步产品库失败: $errMsg"
+                            )
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    fun dismissTokenPrompt() {
+        _uiState.value = _uiState.value.copy(showTokenPrompt = false, tokenPromptMessage = null)
+    }
+
+    fun saveTokenAndSync(token: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.saveToken(token.trim())
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(showTokenPrompt = false, tokenPromptMessage = null)
+                syncProductLibrary(userInitiated = true)
+            }
+        }
+    }
+
     // endregion
 
     // =========================================================================
@@ -744,11 +1004,35 @@ class InventoryViewModel(
         _uiState.value = _uiState.value.copy(selectedProductsForDelete = current)
     }
 
+    fun selectAllProducts() {
+        viewModelScope.launch {
+            val allProducts = repository.getAllProducts()
+            val allKeys = allProducts.map { it.productKey }.toSet()
+            val currentSelected = _uiState.value.selectedProductsForDelete
+            _uiState.value = _uiState.value.copy(
+                selectedProductsForDelete = if (currentSelected == allKeys) emptySet() else allKeys
+            )
+        }
+    }
+
     fun addProduct(product: ProductBase) {
         viewModelScope.launch {
             try {
-                repository.insertProduct(product)
-                _uiState.value = _uiState.value.copy(userMessage = "已添加产品: ${product.productName}")
+                if (repository.hasOngoingSessions()) {
+                    _uiState.value = _uiState.value.copy(userMessage = "存在进行中的盘点任务，禁止修改产品库")
+                    return@launch
+                }
+                // 组合键 (DI|物料编码) 相同视为同一产品：覆盖更新而非 REPLACE（避免外键冲突闪退），并合并扫码占位
+                val newKey = ProductBase.computeProductKey(product.di, product.materialCode)
+                val safeProduct = product.copy(productKey = newKey)
+                val existing = repository.getProductByKey(newKey)
+                if (existing != null) {
+                    repository.updateProduct(safeProduct)
+                    _uiState.value = _uiState.value.copy(userMessage = "产品已存在，已覆盖更新: ${safeProduct.productName}")
+                } else {
+                    repository.insertProduct(safeProduct)
+                    _uiState.value = _uiState.value.copy(userMessage = "已添加产品: ${safeProduct.productName}")
+                }
                 // 刷新列表
                 val query = _uiState.value.searchQuery
                 if (query.isNotBlank()) searchProducts(query)
@@ -762,10 +1046,25 @@ class InventoryViewModel(
     fun deleteSingleProduct(productKey: String) {
         viewModelScope.launch {
             try {
-                repository.deleteProductByKey(productKey)
-                _uiState.value = _uiState.value.copy(userMessage = "已删除产品")
-                val query = _uiState.value.searchQuery
-                if (query.isNotBlank()) searchProducts(query)
+                if (repository.hasOngoingSessions()) {
+                    _uiState.value = _uiState.value.copy(userMessage = "存在进行中的盘点任务，禁止修改产品库")
+                    return@launch
+                }
+                val result = repository.deleteProductByKey(productKey)
+                if (result.isFailure) {
+                    _uiState.value = _uiState.value.copy(userMessage = result.exceptionOrNull()?.message ?: "删除失败")
+                    return@launch
+                }
+                val remaining = _uiState.value.productList.filter { it.productKey != productKey }
+                val count = repository.getProductCount()
+                if (count == 0) {
+                    repository.resetProductPullSeq()
+                }
+                _uiState.value = _uiState.value.copy(
+                    productList = remaining,
+                    productCount = count,
+                    userMessage = "已删除产品"
+                )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(userMessage = e.message ?: "删除失败")
             }
@@ -777,14 +1076,32 @@ class InventoryViewModel(
         if (selected.isEmpty()) return
         viewModelScope.launch {
             try {
-                repository.deleteProductsByKey(selected.toList())
+                if (repository.hasOngoingSessions()) {
+                    _uiState.value = _uiState.value.copy(userMessage = "存在进行中的盘点任务，禁止修改产品库")
+                    return@launch
+                }
+                val result = repository.deleteProductsByKey(selected.toList())
+                val remaining = _uiState.value.productList.filter { it.productKey !in result.deletedKeys }
+                val count = repository.getProductCount()
+                if (count == 0) {
+                    repository.resetProductPullSeq()
+                }
+                val message = buildString {
+                    append("已删除 ${result.deletedKeys.size} 条产品")
+                    if (result.hasBlocked) {
+                        val blockedDesc = result.blockedKeys.entries.joinToString("、") { (key, ref) ->
+                            if (ref > 0) "$key(${ref}条记录引用)" else "$key"
+                        }
+                        append("，${result.blockedKeys.size} 条被拒：$blockedDesc")
+                    }
+                }
                 _uiState.value = _uiState.value.copy(
                     isProductDeleteMode = false,
                     selectedProductsForDelete = emptySet(),
-                    userMessage = "已删除 ${selected.size} 条产品"
+                    productList = remaining,
+                    productCount = count,
+                    userMessage = message
                 )
-                val query = _uiState.value.searchQuery
-                if (query.isNotBlank()) searchProducts(query)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(userMessage = e.message ?: "批量删除失败")
             }

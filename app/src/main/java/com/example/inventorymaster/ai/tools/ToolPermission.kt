@@ -9,7 +9,8 @@ enum class ToolPermission {
 object ToolPermissionManager {
 
     private val confirmRequired = setOf(
-        "execute_ui_action"
+        "execute_ui_action",
+        "update_record_verification"
     )
 
     private val blockedTools = setOf<String>()

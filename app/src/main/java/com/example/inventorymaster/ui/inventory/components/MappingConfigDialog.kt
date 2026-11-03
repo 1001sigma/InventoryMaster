@@ -2,27 +2,30 @@ package com.example.inventorymaster.ui.inventory.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import com.example.inventorymaster.ui.components.ModernAlertDialog
+import com.example.inventorymaster.ui.components.ModernDialogButtonBar
+import com.example.inventorymaster.ui.components.ModernDialogTextField
+import com.example.inventorymaster.ui.components.ModernDropdownMenu
+import com.example.inventorymaster.ui.theme.TouchTargetMin
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -103,29 +106,36 @@ fun MappingConfigDialog(
         headers.map { ExcelUtils.suggestFieldType(it) }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("列映射配置") },
-        text = {
+    ModernAlertDialog(
+        onDismiss = onDismiss,
+        title = "列映射配置",
+        showContentCard = false,
+        content = {
             Column {
                 // 模板名称输入
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    OutlinedTextField(
+                    ModernDialogTextField(
                         value = templateName,
                         onValueChange = { templateName = it },
-                        label = { Text("模板名称") },
-                        singleLine = true,
+                        label = "模板名称",
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    TextButton(onClick = { saveTemplate = !saveTemplate }) {
+                    Box(
+                        modifier = Modifier
+                            .heightIn(min = TouchTargetMin)
+                            .clickable { saveTemplate = !saveTemplate }
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
                             if (saveTemplate) "已勾选保存" else "保存模板",
                             color = if (saveTemplate) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }
@@ -140,7 +150,7 @@ fun MappingConfigDialog(
                         val fieldType = fieldDef.fieldType
                         val selectedIdx = selections[fieldType]
                             ?: keywordDefaults.entries.firstOrNull { it.value == fieldType }?.key
-                            ?: -2  // -2 = 未选择，回退关键词兜底
+                            ?: -2
 
                         val displayText = when {
                             selectedIdx == -2 -> "(自动识别)"
@@ -177,7 +187,7 @@ fun MappingConfigDialog(
                                 )
                             }
 
-                            DropdownMenu(
+                            ModernDropdownMenu(
                                 expanded = expandedField == fieldType,
                                 onDismissRequest = { expandedField = null }
                             ) {
@@ -194,7 +204,7 @@ fun MappingConfigDialog(
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                if (isRecommended) "★ $header" else header,
+                                                if (isRecommended) "推荐 · $header" else header,
                                                 fontWeight = if (isRecommended) FontWeight.Bold else FontWeight.Normal
                                             )
                                         },
@@ -211,19 +221,18 @@ fun MappingConfigDialog(
             }
         },
         confirmButton = {
-            Button(onClick = {
-                val finalMapping = mutableMapOf<Int, ExcelUtils.FieldType>()
-                for ((ft, idx) in selections) {
-                    if (idx >= 0) finalMapping[idx] = ft
-                }
-                val name = if (saveTemplate && templateName.isNotBlank()) templateName.trim() else null
-                onConfirm(finalMapping, name)
-            }) {
-                Text("确认导入")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            ModernDialogButtonBar(
+                onConfirm = {
+                    val finalMapping = mutableMapOf<Int, ExcelUtils.FieldType>()
+                    for ((ft, idx) in selections) {
+                        if (idx >= 0) finalMapping[idx] = ft
+                    }
+                    val name = if (saveTemplate && templateName.isNotBlank()) templateName.trim() else null
+                    onConfirm(finalMapping, name)
+                },
+                onDismiss = onDismiss,
+                confirmText = "确认导入"
+            )
         }
     )
 }

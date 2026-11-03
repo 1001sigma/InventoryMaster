@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -17,12 +18,12 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.NoteAdd
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import com.example.inventorymaster.ui.components.ModernAlertDialog
+import com.example.inventorymaster.ui.components.ModernDialogButtonBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,10 +39,10 @@ fun TemplateSelectionDialog(
     onQuickImport: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Excel 导入方式") },
-        text = {
+    ModernAlertDialog(
+        onDismiss = onDismiss,
+        title = "Excel 导入方式",
+        content = {
             Column {
                 if (templates.isNotEmpty()) {
                     Text(
@@ -101,7 +102,11 @@ fun TemplateSelectionDialog(
                 }
 
                 Row(
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onNewMapping).padding(vertical = 10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable(onClick = onNewMapping)
+                        .padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(Icons.Default.NoteAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
@@ -110,7 +115,11 @@ fun TemplateSelectionDialog(
                 }
 
                 Row(
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onQuickImport).padding(vertical = 10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable(onClick = onQuickImport)
+                        .padding(vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(Icons.Default.FlashOn, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
@@ -119,9 +128,13 @@ fun TemplateSelectionDialog(
                 }
             }
         },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+        confirmButton = {
+            ModernDialogButtonBar(
+                onConfirm = onDismiss,
+                confirmText = "关闭",
+                dismissText = "",
+                onDismiss = null
+            )
         }
     )
 }

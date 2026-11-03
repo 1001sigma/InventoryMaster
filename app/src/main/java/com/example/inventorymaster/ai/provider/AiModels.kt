@@ -6,7 +6,13 @@ data class AiMessage(
     val role: String,
     val content: String?,
     val toolCalls: List<AiToolCall>? = null,
-    val toolCallId: String? = null
+    val toolCallId: String? = null,
+    /** assistant 最终回复的整轮耗时（毫秒）；运行时统计、随快照持久化，恢复历史时回显 */
+    val durationMs: Long? = null,
+    /** 生成该回复的模型 ID；随快照持久化（操作条展示），null=未统计/旧数据 */
+    val model: String? = null,
+    /** 产品卡片 JSON（ai/agent/ProductCardListCodec 编解码）；随快照持久化、恢复历史时回显卡片。仅供界面，绝不进模型提示词 */
+    val cardActionJson: String? = null
 )
 
 data class AiResponse(

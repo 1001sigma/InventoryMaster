@@ -38,12 +38,12 @@ val LightBackground = Color(0xFFFAFAFA)
 val LightSurface = Color(0xFFF5F5F5)
 val LightSurfaceVariant = Color(0xFFE8E8E8)
 
-// --- Semantic Status Colors ---
+// --- Semantic Status Colors (唯一真相源，禁止在其他文件重复定义同名色值) ---
 // These remain consistent across dark and light modes
-val StatusSuccess = Color(0xFF4CAF50)       // checked, matched, verified
-val StatusWarning = Color(0xFFFFC107)       // near-expiry, quantity diff
+val StatusSuccess = Color(0xFF10B981)       // checked, matched, verified
+val StatusWarning = Color(0xFFF59E0B)       // near-expiry, quantity diff
 val StatusError = Color(0xFFE53935)         // expired, mismatch, error
-val StatusInfo = Color(0xFF2196F3)          // pending, in-progress
+val StatusInfo = Color(0xFF3B82F6)          // pending, in-progress
 val StatusArchived = Color(0xFF9E9E9E)      // archived, locked
 val StatusPending = Color(0xFF0288D1)       // pending check (darker blue for contrast)
 

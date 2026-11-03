@@ -11,6 +11,28 @@
 > **进度（2026-10-02）：P0 批次（P0-1 ~ P0-4）已全部实现**——ChatScreen 滚动锚定/脱钩 + 回底钮
 > （列表改 reverseLayout + 消息稳定 id 做 key）、ChatMessageItem 三点呼吸/操作条/错误重试卡、
 > ChatViewModel lastUserMessage + regenerateLast/retryLast。待实机走查（文末"总体验收"）。
+>
+> **进度（2026-10-03）：P1 首两项已实现**——P1-7 阅读排版基线（MarkdownText baseStyle 行高
+> 1.65× + h1-h6 标题非对称外距）与 P1-9 输入框自动增高（AppTextField 透传 minLines，聊天输入
+> 1→6 行生长）。编译通过，待实机走查。
+>
+> **进度（2026-10-04）：P1-8 IME 贴合已实施**——实机证据到位（键盘弹出把整个页面顶上去 = 系统选了
+> pan），MainActivity 声明 `windowSoftInputMode="adjustResize"` 修复；未走 imePadding 路线
+> （非 edge-to-edge 下为 no-op）。**待实机复验**。
+>
+> **进度（2026-10-04 晚）：P1-6 核心子项落地（v2 多会话模型）**——任务详情页 AI 入口、顶栏
+> 「新建会话」、侧栏长按删除/任务徽标/时间分组；经用户确认推翻「每任务一线程」改为 ZCode 式
+> 「任务下多会话」（`t<id>_<ts>`/`g_<ts>` 前缀编码，旧 global 降级为普通自由会话，零迁移）。
+> 编译通过，待实机走查。
+>
+> **🏁 阶段收官（2026-10-05）**——P1-6 后续实机迭代全部完成，用户验收"基本没有问题"：
+> ① 侧栏全高修复（verticalScroll 挂 ModalDrawerSheet 本体 → 面板塌成包裹内容高度，滚动必须
+> 放内层 Column）+ 全局/任务分段筛选（打开抽屉自动跟随当前线程类型）；② 任务页悬浮 AI 球
+> （长按顶栏图标脱落且不松手直接拖、X 轴吸边、拖回顶栏/长按双路收回、rememberSaveable 跨导航
+> 存活、仅盘库页内）；③ 快捷问答面板（单击球弹出全宽输入条包球、半透明回答卡自屏幕最顶部随
+> 流式向下生长、底部拖拽手柄下拉延伸 ≥100dp 松手进完整对话/回弹、点手柄收起软键盘）。剩余
+> 细节后续批次：球条一体感视觉、长答案延伸到输入条后方的表现、示意卡的追问 chips/复制/
+> 重新生成操作条。本阶段不含 P1-5/10、P1-6 搜索/置顶、P2（仍为待办）。
 
 ---
 
@@ -22,7 +44,7 @@
 | 发送/停止按钮变形 | 生成中发送键变红色 Stop，`stopGeneration()` 取消 | 建议二 §5.3 | ✅ 已有 |
 | Markdown 渲染 | mikepenz 0.31.0（M3 主题接入） | 建议二 §4.1 | ✅ 已有 |
 | **表格自适应** | 0.31.0 修对齐 + `AutoWrapMarkdownTable`（列宽按内容比例分配、单元格换行、细网格线） | 建议一 §二 | ✅ 已有（本轮完成） |
-| 历史会话抽屉 | 按任务分线程（threadId=任务ID/global），点按切换 | 建议二 §2 | ✅ 部分（缺管理能力，见 P1-6） |
+| 历史会话抽屉 | 多会话模型（任务 `t<id>_<ts>`/自由 `g_<ts>`）+ 长按删除 + 任务徽标 + 时间分组 | 建议二 §2 | ✅ 已有（2026-10-04；搜索/置顶留 P1-6） |
 | 思维链折叠卡片 | 工具调用参数/结果折叠展示，设置开关 | — | ✅ 已有 |
 | 确认弹窗（CONFIRM） | 30s 超时自动关闭 | — | ✅ 已有 |
 | 虚拟化列表 | LazyColumn（建议一 §五"虚拟滚动"） | 建议一 §五 | ✅ 已有 |
@@ -33,9 +55,9 @@
 | 消息操作条 | 无 | 建议二 §4.2 | ❌ P0-4 |
 | 流式渲染性能 | 每 chunk 全量重解析 Markdown | 建议一 §五（增量解析） | ⚠️ P1-5 |
 | 会话管理（删/搜/置顶） | 只能清当前线程 | 建议二 §2.2-2.3 | ⚠️ P1-6 |
-| 排版行高 | bodyLarge 默认行高 | 建议一 §六.3 | ⚠️ P1-7 |
-| IME 贴合 | 无 imePadding（非 edge-to-edge，系统默认 resize 行为未验证） | 建议二 §6.2 | ⚠️ P1-8 |
-| 输入框自动增高 | 固定 maxLines=3 后内部滚动 | 建议二 §5.1 | ⚠️ P1-9（接近目标，微调） |
+| 排版行高 | baseStyle 行高 1.65× + 标题上大下小非对称外距 | 建议一 §六.3 | ✅ 已有（2026-10-03） |
+| IME 贴合 | manifest `adjustResize` 已声明（原 adjustUnspecified 实机被选为 pan，整页上移） | 建议二 §6.2 | 🔧 已实施（2026-10-04），待复验 |
+| 输入框自动增高 | `minLines=1, maxLines=6` 随内容生长，超出内部滚动 | 建议二 §5.1 | ✅ 已有（2026-10-03） |
 | 代码块增强 | 库默认渲染，无语言标签/复制钮 | 建议二 §4.1 | ⚠️ P1-10（本场景低频） |
 
 ---
@@ -106,20 +128,70 @@ TTFT 通常 1~3s，三点呼吸比骨架屏成本低、观感更贴聊天场景�
   渲染（建议一 §四的"完成后富渲染"思路 + 100ms 交叉淡入）。注意铁律④：JSON 协议模型流式正文不
   外泄——此方案仅适用于 FC 模型（与现行为一致）。
 
-### P1-6 会话管理增强（建议二 §2.2-2.3 裁剪版）
+### P1-6 会话管理增强（建议二 §2.2-2.3 裁剪版）——核心子项已实现 2026-10-04（v2 多会话模型）
 
-抽屉内会话条目增加：
-- **删除**：长按弹菜单（重命名不采纳——标题=任务名，见"不采纳"表），红色确认 + Snackbar 撤销
-  （5s 内 `chatMessageDao` 软删除或延迟删除）；
-- **搜索**：抽屉顶部搜索框，按标题 + 消息内容过滤；`chat_messages` 已有 threadId 索引，DAO 加
-  `SELECT threadId FROM chat_messages WHERE content LIKE ?` 即可；
-- **置顶**：DataStore 存 pinned threadId 列表，置顶会话脱离时间轴常驻最上（高频任务场景实用）。
-- 时间轴分组（今天/7 天内/更早）：`getThreadSummaries` 已有 lastTime，分组纯 UI，顺手做。
+> 2026-10-04 修订：经用户确认**推翻「每任务一线程」铁律**，改为 ZCode 式多会话——任务=项目、
+> 会话=项目下多条对话。关键前提：任务线程从无 UI 入口（死路径）且无存量数据，threadId 格式
+> 得以零迁移切换。旧「会话 Fork」不采纳条目不受影响——那是同一对话内的版本分支，多会话是并列的新对话。
 
-### P1-7 阅读排版基线（建议一 §六.3）
+**已实现**（按 入口 → 新建 → 侧栏 顺序）：
+- **线程模型 v2**：任务会话 `t<任务ID>_<创建时间戳>`（每任务 N 条）、自由会话 `g_<创建时间戳>`；
+  旧 "global" 降级为普通自由会话（命名规则统一，历史数据零迁移）；旧纯数字任务线程 ID 兼容解析。
+  编解码集中在 `ChatViewModel` 的 `ChatThreadIds`；`chat_messages` 表结构不动。
+- **任务详情页入口**：InventoryScreen 顶栏 AutoAwesome 图标 → `ai_chat?sessionId=N` →
+  `enterFromSession`：落到该任务最近活跃会话，一条都没有则现场创建；agent 绑定任务
+  （PromptBuilder 任务注入从此真正生效——原机制是死路径，全 App 唯一入口硬编码 sessionId=0）。
+  ⚠️ 路由托管教训（2026-10-04 实机闪退修复）：`ai_chat` 必须挂**外层** NavHost（MainActivity）——
+  盘库详情页在外层路由 `inventory/{sessionId}` 上，跨层看不到内层图的路由，第一版挂 MainScreen
+  内层图导致点击入口即抛 `IllegalArgumentException`；主页入口也一并改走外层回调，ChatScreen
+  全 App 单一挂载点。
+- **着陆规则**：主页（sessionId=0）→ 最近活跃**自由会话**，绝不自动绑任务（防沉默上下文继承）；
+  侧栏点击 → `openThread` 按线程类型绑定。工具层不受线程限制（`query_records` 缺省查全部任务，
+  自由会话可点名任务查询——`list_sessions` 描述已内置"先取任务ID再查询"教程）。
+- **顶栏**：删除按钮 → 「新建会话」（+ 全局可用：任务语境=该任务下新对话，自由语境=新自由会话）；
+  标题跟随线程（任务会话显示任务名，其余显示会话命名）。
+- **统一命名**：所有会话标题 = 首条用户消息首行截断 20 字，无消息 = 「新对话」；DAO
+  `getFirstUserMessages`（GROUP BY + MIN(sortIndex) 裸列约定）一次查全。空会话不落库，切走即弃。
+- **侧栏**：NavigationDrawerItem 不支持长按 → Surface+combinedClickable 自绘行；长按 →
+  「删除会话」红字菜单 → 确认弹窗（注明仅删聊天记录、不动任务数据）；删当前线程走
+  cancel/join/清内存保护后切最近剩余线程（全删空则新开自由会话）；任务徽标（限宽 96dp）+
+  时间分组（今天/7天内/更早，`getThreadSummaries` 已按 lastTime 降序）。
 
-`MarkdownText.kt` 的 baseStyle 设 `lineHeight = fontSize × 1.65`（bodyLarge 16sp → 26sp）；
+**未做（仍留 backlog）**：搜索（content LIKE）、置顶、Snackbar 撤销/软删除（本次降级为确认弹窗）、
+侧栏按任务分组折叠（先平铺+徽标观察真实使用再定）。
+
+**2026-10-05 实机迭代补充（阶段收官批）**：
+- **侧栏全高修复**：`ModalDrawerSheet` 内部是 `modifier.sizeIn().fillMaxHeight()`，把
+  `verticalScroll` 传给它会把无界高度传入、fillMaxHeight 失效 → 面板塌成包裹内容高度（"半截
+  抽屉"）。滚动一律放 Sheet 内层 `Column(fillMaxSize().verticalScroll())`；
+- **全局/任务分段筛选**：M3 `SingleChoiceSegmentedButtonRow`，按 `ChatThreadInfo.isTask` 过滤；
+  打开抽屉（History 图标）时页签自动跟随当前线程类型；
+- **悬浮 AI 球**（`InventoryScreen` 私有组件，仅盘库页内）：顶栏图标 `detectDragGesturesAfterLongPress`
+  长按脱落且**同一手势不松手直接拖**（拖动期间图标保留但 `graphicsLayer` 全透明——立即隐藏会
+  销毁手势节点中断拖拽流）；松手按移动距离区分"仅脱落"与"吸边/收回"；`rememberSaveable` 存
+  active/offset（跨导航存活）；吸边 150ms 动画由父级 `Animatable` 驱动，拖拽起手先 cancel；
+- **快捷问答面板**：单击球 → `enterFromSession(sessionId)` 绑定任务线程 + 球在下半屏先抬到
+  45% 线；输入条全宽、垂直中心锁定球心（球由父级**最后叠绘**在条端留白区）；回答卡自窗口
+  顶端 8dp 起**随流式向下生长**（上限=输入条上沿，超出转内部滚动；`verticalScroll` 必须挂
+  Surface 内层 Column，挂本体会破坏 shape 裁切）；回答 = `uiState.messages` 最后一条用户消息
+  之后的 assistant/error 气泡拼接（与完整聊天页同源同线程）；
+- **底部拖拽手柄**：卡片内固定于底边（内容区 weight + 手柄 24dp），`detectVerticalDragGestures`
+  0.6 阻尼使卡片**向下延伸**（顶端不动，非整体平移），延长区渐显提示；松手 ≥100dp 跳完整
+  聊天页、否则 150ms 回弹；单击手柄收起软键盘。早期的 nestedScroll"滚到顶再拉"方案已整体移除；
+- **悬浮球包裹输入条的视觉一体感**用户评价不高，已搁置待后续批次。
+
+### P1-7 阅读排版基线（建议一 §六.3）——✅ 已实现 2026-10-03
+
+`MarkdownText.kt` 的 baseStyle 设 `lineHeight = fontSize × 1.65`（bodyLarge 16sp → 26.4sp）；
 标题采用上大下小非对称 margin（库 typography 已分 h1-h6，补 spacing 即可）。一处改动全局生效。
+
+**落地记录**（`ui/ai/MarkdownText.kt`）：
+- `baseStyle.lineHeight = fontSize × 1.65f`（随主题字号缩放），text/paragraph 共用；code 样式维持
+  bodyMedium 默认行高（等宽代码块 1.65 过于松散）；
+- 标题间距：库 `MarkdownPadding` 只有统一 `block`(默认 2dp) 字段、`MarkdownHeader` 自身零间距，
+  无 per-heading 配置——唯一切入点是组件覆盖：`markdownComponents(heading1..6 = headerComponent(level))`
+  以 `Box(PaddingValues(top, bottom))` 包 `MarkdownHeader`。外距取值（上/下）：h1 12/4、h2 10/4、
+  h3 8/4、h4-h6 6/2，叠加库的 2dp 块前间隔后保持 上 > 下；setext 标题未覆盖（模型输出几乎不产生）。
 
 ### P1-8 IME 贴合核验（建议二 §6.2）
 
@@ -131,10 +203,41 @@ TTFT 通常 1~3s，三点呼吸比骨架屏成本低、观感更贴聊天场景�
 + `imeNestedScroll`，消息流 `LazyColumn` 的 contentPadding 底部随 IME 变化，保证最后一条消息悬在
 输入框上方。这是独立小改动，但**必须先有实机证据再动手**。
 
-### P1-9 输入框自动增高（建议二 §5.1）
+**实机证据与落地记录（2026-10-04）**：
+- 证据（用户实机）：键盘弹出后**整个页面被顶上去**——非"遮挡"而是 **pan 平移**，与原方案预设的
+  imePadding 修法（针对遮挡/跳动）不是同一症状；
+- 根因：MainActivity 未开 edge-to-edge 且 manifest 无 `windowSoftInputMode`（=adjustUnspecified），
+  系统对聊天页自行选择了 pan；
+- 修复：`AndroidManifest.xml` MainActivity 声明 `android:windowSoftInputMode="adjustResize"`
+  （App 全局生效：键盘弹出改为压缩窗口，输入行贴键盘上方，LazyColumn 随之缩短，页面不再平移）；
+- **不采用** imePadding/imeNestedScroll：非 edge-to-edge（DecorFitsSystemWindows=true）下
+  `WindowInsets.ime` 被框架消费，`imePadding` 是 no-op——该路线仅在将来开启 edge-to-edge 时才需要；
+- 复验点：聊天页输入贴键盘、历史列表可滚动到最新消息；盘点详情搜索、产品库、设置各输入框同受
+  adjustResize 影响应一并过一遍；Dialog 内输入（独立窗口）不受影响。
+- **2026-10-08 Edge-to-Edge 全面重构落地与避坑记录**：
+  - **坑点 1：输入栏被软键盘覆盖**
+    - 现象：开启 `enableEdgeToEdge()` 后，ChatScreen 和悬浮胶囊在键盘弹起时直接沉入键盘后方。
+    - 根因：非 Edge-to-Edge 下依靠 `adjustResize` 压缩物理窗口；沉浸式（`DecorFitsSystemWindows=false`）下整个 Activity 窗口恒 100% 满屏，若只给输入栏挂 `navigationBarsPadding()`，系统键盘高度（IME）未被感知，输入框留在屏幕底部被挡死。
+    - 修复：采用动态计算 `val bottomInset = maxOf(imeBottom, navBottom)`。键盘收起时保持手势条安全区，键盘弹出时跟随软键盘高度精确抬升。
+  - **坑点 2：Padding 累加导致悬空空隙（Gap）**
+    - 现象：在部分页面同时挂 `.calculateBottomPadding()` 和 `.imePadding()`，键盘弹出后输入框悬浮在键盘上方很远，留有一大块空白。
+    - 根因：Compose Modifier 的 Padding 是物理累加的；而软键盘弹起时在屏幕上已经覆盖了导航栏，二者叠加会导致高度重复计算。
+    - 修复：Scaffold 明确指定 `contentWindowInsets = WindowInsets.statusBars`（不让 Scaffold 重复注入底部 padding），页面底部单点使用 `maxOf(ime, nav)` 统一控制。
+  - **坑点 3：产品库搜索时底部导航栏被键盘顶起**
+    - 现象：产品库等带全局导航的页面输入时，底部 NavigationBar 被键盘顶在半空中。
+    - 修复：`MainScreenNav.kt` 监听键盘高度 `rememberIsKeyboardOpen()`，软键盘弹出时平滑隐藏全局底部导航栏，收起时自动恢复，产品库列表在软键盘上方占满可视空间。
+  - **坑点 4：快捷输入胶囊拖拽手柄连带整体平移**
+    - 现象：胶囊上方上拉横条被向上拖动时，`barPullPx` 作用到了胶囊 Surface 本体，导致整个输入框跟着被拉离原位。
+    - 修复：解耦胶囊与拖拽条位移，胶囊 Surface 保持稳固贴底/贴键盘；仅拖拽小横条随手势向上被拉起，并实时渐显「↑ 继续上拉进入完整对话」/「↑ 松开进入完整对话」的引导文本与主色高亮反馈，松手超过 100dp 阈值平滑进入完整对话，未达阈值弹簧平滑复位。
+
+### P1-9 输入框自动增高（建议二 §5.1）——✅ 已实现 2026-10-03
 
 **现状**：`AppTextField(maxLines=3)` 固定三行后内部滚动，已是"向上生长"的近似。
 **方案**：`maxLines` 随内容动态（1 → 6 行封顶，约 200px），`minLines=1`；发送键逻辑不变。约 5 行代码。
+
+**落地记录**：`AppTextField` 新增 `minLines` 参数透传给 `OutlinedTextField`（默认 1，既有调用方
+不受影响）；`ChatScreen` 聊天输入改 `minLines=1, maxLines=6`——Compose 原生行为即随内容自动生长
+至 6 行后转内部滚动，无需按内容手动计算 maxLines。material3 1.3.0（BOM 2024.09.00）已支持 minLines。
 
 ### P1-10 代码块增强（建议二 §4.1 降级）
 
@@ -186,7 +289,7 @@ TTFT 通常 1~3s，三点呼吸比骨架屏成本低、观感更贴聊天场景�
 | 多模态附件/拖拽/粘贴截图（§5.2） | 无多模态模型；拍照识码走 batchscanner 既有链路，职责不混 |
 | 桌面快捷键体系（§6.3） | 纯移动端 App；移动端"回车=换行、发送键发送"现状已是建议二 §5.1 的目标行为 |
 | 三栏响应式/常驻侧边栏（§1） | 手机竖屏为主，抽屉已够；平板适配属远期通用议题 |
-| 会话 Fork/分支（§3.2） | 与"每任务一线程"的会话模型冲突（threadId 绑定任务上下文），分支会破坏按任务溯源 |
+| 会话 Fork/分支（§3.2） | 与"每任务一线程"的会话模型冲突（threadId 绑定任务上下文），分支会破坏按任务溯源（**注：2026-10-04 起任务已放开为多会话，见 P1-6 v2；本条否的"同一对话内版本分支"仍不采纳**） |
 | 归档箱（§2.3） | 会话生命周期跟随任务，任务本身已有归档体系，二次归档冗余 |
 | 自动重命名（§2.2） | 标题=任务名（任务列表可读名称），无"新会话"默认名问题；仅 global 线程固定标题，可在 P1-6 顺手用首条消息截断命名，不单列 |
 | Token/上下文指示器（§3.2） | OpenAI 兼容接口 usage 字段各厂商不齐；对仓管用户无决策价值 |
@@ -212,8 +315,31 @@ TTFT 通常 1~3s，三点呼吸比骨架屏成本低、观感更贴聊天场景�
 1. **第一批（P0，~2 天）**：P0-1 滚动 → P0-2 骨架 → P0-4 操作条 → P0-3 重试（P0-3 依赖
    lastUserMessage，与 P0-4 的 regenerate 共用）。
 2. **第二批（P1，按需排期）**：P1-7（一行）→ P1-9（五行）→ P1-5（性能，长会话用户出现后再做也行）
-   → P1-6 → P1-8（先核验）→ P1-10。
+   → P1-6 → P1-8（先核验）→ P1-10。（P1-7 / P1-9 已于 2026-10-03 完成；P1-8 于 2026-10-04 按实机
+   证据实施 adjustResize，待复验）
 3. **P2** 视真实使用反馈决定。
 
 **总体验收**：P0 完成后完整走查——发送问题 → 三点呼吸 → 流式跟随（期间上滑不拉回、回底钮可用）
 → 回复完出现操作条 → 复制/重新生成 → 制造一次断网 → 红卡错误 + 重试成功。
+
+---
+
+## 八、产品卡片与操作栏闭环重构（2026-10-15）
+
+### 1. 操作栏下移与 reverseLayout 闭环修复
+- **痛点**：在聊天消息流中，若卡片与操作栏分别渲染，受 `LazyColumn(reverseLayout = true)` 影响，操作栏（复制/耗时/模型/重新生成）容易横插在 AI 回复文字与卡片之间，破坏对话视觉连贯性；
+- **解法**：卡片列表直接嵌入 `ChatMessageItem` 内部，按 `[MarkdownText 正文] -> [ProductCardListWidget 卡片列表] -> [MessageActionBar 操作条]` 线性排布。操作栏恒定位于卡片正下方，彻底实现单条消息完整闭环。
+
+### 2. 现代卡片组件（ProductCardListWidget）
+- **多维标签流**：
+  - 任务归属徽章：`任务 #1` 或具体任务名（PrimaryContainer）；
+  - 存放库位徽章：冷藏库、常温库等（SecondaryContainer）；
+  - 查验状态胶囊：绿色浅底深字「已查验」 / 橙色浅底深字「未查验」；
+  - 效期倒计时警示：计算距当前天数，过期显示「已过期 X天」（ErrorContainer），近效期显示「剩 X天」（Amber 警示）。
+- **材质与排版**：双层圆角 Surface、厂家与规格副标题中点连接、批号与高亮数量主次分明。
+
+### 3. 现代全字段卡片详情弹窗（CardDetailDialog）
+- 顶部大标题 + 规格副标题 + 业务标签栏；
+- 双核心指标卡片：库存数量（Primary 色）、有效期至（Secondary 色）；
+- 全字段网格列表：生产厂家、存放库位、生产批号、生产日期、物料编码、DI/编码、所属任务、备注信息，支持内部平滑滚动（`verticalScroll`）防止溢出屏幕。
+

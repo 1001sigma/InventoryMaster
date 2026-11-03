@@ -2,10 +2,12 @@ package com.example.inventorymaster.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.dto.SessionDto
 import com.example.inventorymaster.data.entity.InventorySession
 import com.example.inventorymaster.data.model.SessionWithProgress
 import com.example.inventorymaster.data.repository.InventoryRepository
+import com.example.inventorymaster.data.network.CollabApiException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,7 +21,10 @@ data class SessionUiState(
     val userMessage: String? = null
 )
 
-class SessionViewModel(private val repository: InventoryRepository) : ViewModel() {
+class SessionViewModel(
+    private val repository: InventoryRepository,
+    private val settingsRepository: SettingsRepository
+) : ViewModel() {
 
     // 2. 初始化状态
     private val _uiState = MutableStateFlow(SessionUiState())
@@ -36,16 +41,25 @@ class SessionViewModel(private val repository: InventoryRepository) : ViewModel(
 
     // ... 下一步我们往这里填函数 ...
     // --- Session 操作 ---
-    //新建任务
-    fun createNewSession(name: String) {
-        viewModelScope.launch { repository.createSession(name) }
+    //新建任务。M9：回调带回新任务 ID——列表页创建后可紧接着向该任务导入 Excel
+    fun createNewSession(name: String, onCreated: (Long) -> Unit = {}) {
+        viewModelScope.launch { onCreated(repository.createSession(name)) }
     }
 
     //尝试归档
-    suspend fun tryFinishSession(sessionId: Long): Int {
+    suspend fun tryFinishSession(sessionId: Long, force: Boolean = true): Int {
         val unverifiedCount = repository.getUnverifiedCount(sessionId)
-        if (unverifiedCount == 0) {
+        if (force || unverifiedCount == 0) {
             repository.updateSessionStatus(sessionId, 1)
+            // M5（R4）：本地归档 → 上报服务端；失败入离线队列，启动/同步成功后补报
+            viewModelScope.launch {
+                val uuid = repository.getSessionById(sessionId)?.uuid ?: return@launch
+                repository.reportTaskStatus(uuid, 1).onFailure { e ->
+                    if (e !is CollabApiException) {  // 服务端终态拒绝不出队；网络失败才入队
+                        settingsRepository.addPendingReport(uuid)
+                    }
+                }
+            }
             return -1
         }
         return unverifiedCount

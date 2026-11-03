@@ -8,11 +8,9 @@ import androidx.compose.ui.graphics.Color
  */
 object ModernColorSchemes {
 
-    // 统一的状态色定义（采用现代扁平化的高级色调，避免外部引用缺失）
-    val StatusSuccess = Color(0xFF10B981) // 翡翠绿 - 清晰明确
-    val StatusWarning = Color(0xFFF59E0B) // 琥珀黄 - 醒目不刺眼
-    val StatusInfo = Color(0xFF3B82F6)    // 亮蓝色 - 传达信息
-    val M3Error = Color(0xFFBA1A1A)       // 遵循 Material 3 规范的标准错误色
+    // M3 色板的错误色种子（用于生成 ColorScheme.error）
+    // 语义状态色 success/warning/info/error 的唯一定义在 Color.kt，此处不得重复
+    val M3Error = Color(0xFFBA1A1A)
 
     val Teal = ThemeColors(
         name = "医疗青绿",
@@ -79,7 +77,13 @@ data class ThemeColors(
     val secondary: Color,
     val tertiary: Color,
     val error: Color = ModernColorSchemes.M3Error,
-    val success: Color = ModernColorSchemes.StatusSuccess,
-    val warning: Color = ModernColorSchemes.StatusWarning,
-    val info: Color = ModernColorSchemes.StatusInfo
-)
+    val success: Color = StatusSuccess,
+    val warning: Color = StatusWarning,
+    val info: Color = StatusInfo
+) {
+    fun asColorTuple(): ColorTuple = ColorTuple(
+        primary = primary,
+        secondary = secondary,
+        tertiary = tertiary
+    )
+}

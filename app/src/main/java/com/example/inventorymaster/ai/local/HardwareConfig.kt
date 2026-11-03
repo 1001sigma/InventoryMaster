@@ -25,14 +25,8 @@ object HardwareConfig {
         return memInfo.totalMem / (1024 * 1024)
     }
 
-    fun getRecommendedModel(context: Context): String {
-        val ramMb = getDeviceRamMb(context)
-        return when {
-            ramMb >= 12 * 1024 -> "gemma-4-e4b"
-            ramMb >= 6 * 1024 -> "gemma-4-e2b"
-            else -> "gemma-4-e2b"
-        }
-    }
+    /** 仅推荐 LocalModelCatalog 已收录的模型；E4B（原 ≥12GB 档）待收录后放开 */
+    fun getRecommendedModel(context: Context): String = "gemma-4-e2b"
 
     private fun hasNnApiSupport(): Boolean {
         return try {

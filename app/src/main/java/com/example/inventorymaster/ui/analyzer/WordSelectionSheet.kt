@@ -22,7 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.BottomSheetDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -32,13 +31,10 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,61 +49,34 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.inventorymaster.utils.JiebaUtils
-import com.google.mlkit.vision.text.Text
+import com.example.inventorymaster.ocr.OcrText
 
-// 定义数据模型
 data class SmartTerm(
     val id: String,
     val text: String,
-    val isOriginal: Boolean = false // 标记是否为原始行（未分词）
+    val isOriginal: Boolean = false
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun WordSelectionSheet(
-    rawText: Text, // MLKit 的原始结果
+    rawText: OcrText,
+    tokenizedWords: List<String>,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
-    isSimpleMode: Boolean
+    onConfirm: (String) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val haptics = LocalHapticFeedback.current
     val scrollState = rememberScrollState()
 
-    // 状态管理
-    var isLoading by remember { mutableStateOf(true) }
-    var termList by remember { mutableStateOf<List<SmartTerm>>(emptyList()) }
+    val termList = tokenizedWords.mapIndexed { index, word ->
+        SmartTerm("term_$index", word)
+    }
     val selectedItems = remember { mutableStateListOf<SmartTerm>() }
-
-    // 布局缓存 (用于滑动选中)
     val itemBounds = remember { mutableStateMapOf<Int, Rect>() }
 
-    // 🔥 核心逻辑：异步分词
-    LaunchedEffect(rawText) {
-        isLoading = true
-        // 1. 提取所有原始文本，拼接成一大段
-        val fullText = rawText.textBlocks.joinToString(" ") { it.text }
-            .replace("\n", " ")
-
-        // 2. 调用 Jieba 进行智能分词
-        val cutWords = JiebaUtils.cut(fullText,useSimpleMode = isSimpleMode)
-
-        // 3. 构建展示列表
-        // 策略：可以把“原始行”也放进去供备选，或者只放分词结果
-        // 这里演示只放分词结果，为了方便选择
-        val list = cutWords.mapIndexed { index, word ->
-            SmartTerm("term_$index", word)
-        }
-
-        termList = list
-        isLoading = false
-    }
-
-    // 预览文本：将选中的词拼接起来
     val previewText = selectedItems.joinToString("") { it.text }
 
-    // 处理拖拽选中 (逻辑复用你之前的优秀实现)
     fun handleDrag(touchYInVisibleArea: Float, touchX: Float) {
         val absoluteY = touchYInVisibleArea + scrollState.value
         val touchPoint = Offset(touchX, absoluteY)
@@ -131,10 +100,9 @@ fun WordSelectionSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.7f) //稍微高一点
+                .fillMaxHeight(0.7f)
                 .padding(horizontal = 16.dp)
         ) {
-            // --- 顶部栏 (标题 + 确认) ---
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -149,7 +117,6 @@ fun WordSelectionSheet(
                 ) { Icon(Icons.Default.Check, null) }
             }
 
-            // --- 预览框 ---
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -174,18 +141,11 @@ fun WordSelectionSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // --- 内容区域 ---
-            if (isLoading) {
+            if (termList.isEmpty()) {
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                    Text("正在智能拆解...", Modifier.padding(top = 48.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            } else if (termList.isEmpty()) {
-                Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text("未能识别出有效文本", color = Color.Gray)
+                    Text("未能识别出有效文本", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
-                // 滑动监听容器
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -204,7 +164,6 @@ fun WordSelectionSheet(
                         }
                 ) {
                     Column(Modifier.verticalScroll(scrollState)) {
-                        // 提示用户
                         Text("识别结果 (智能分词)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(bottom = 8.dp))
 
                         FlowRow(
@@ -245,11 +204,11 @@ private fun SmartItemBox(
                 else MaterialTheme.colorScheme.surfaceContainerHighest
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp) // 增大一点点击区域
+            .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
         Text(
             text = text,
-            color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+            color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
             fontSize = 15.sp
         )
     }

@@ -41,6 +41,7 @@ class AgentLoopTest {
     /** 按脚本依次返回响应；流式能力开启时 streamChat 逐组消费 streamScript */
     private class FakeAiService(
         override val capabilities: AiCapabilities = AiCapabilities(functionCalling = true, streaming = false),
+        override val modelId: String = "fake-model",
         private val script: List<AiResponse> = emptyList(),
         private val streamScript: List<List<StreamChunk>> = emptyList(),
         private val alwaysThrow: AiServiceException? = null,
@@ -452,7 +453,7 @@ class AgentLoopTest {
     }
 
     @Test
-    fun `JSON协议流式正文不外泄给UI`() = runBlocking {
+    fun `JSON协议流式工具信封不外泄普通回答实时外显`() = runBlocking {
         val tool = FakeTool("query_records")
         val service = FakeAiService(
             capabilities = AiCapabilities(functionCalling = false, streaming = true),
@@ -469,8 +470,10 @@ class AgentLoopTest {
 
         val events = collect(agent, "查2条")
 
-        // JSON 信封与普通回答都不应产生 ResponseChunk（外显交给最终 Response）
-        assertEquals(0, events.filterIsInstance<AgentEvent.ResponseChunk>().size)
+        // 工具信封（{"tool"...）不产生 ResponseChunk；普通回答文本实时外显（新契约）
+        val chunks = events.filterIsInstance<AgentEvent.ResponseChunk>()
+        assertEquals(1, chunks.size)
+        assertEquals("直接回答：共 2 条", chunks.single().content)
         assertEquals(1, tool.executeCount)
         assertEquals(2, tool.lastArgs?.get("limit")?.asInt)
         assertEquals("直接回答：共 2 条", (events.last() as AgentEvent.Response).content)

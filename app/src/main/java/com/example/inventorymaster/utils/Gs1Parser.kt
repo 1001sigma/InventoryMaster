@@ -47,14 +47,36 @@ object Gs1Parser {
         // 快捷获取常用字段的辅助方法
         val di: String? get() = items["01"]
         val batch: String? get() = items["10"]
-        val expiry: Long? get() = items["17"]?.let { parseDate(it) }
+        val serial: String? get() = items["21"]
+        // 直接读取 AI 解析出的 6 位原生字符串 (YYMMDD)
+        val prodDate: String? get() = items["11"]
+        val expiry: String? get() = items["17"]
+    }
 
-        // 将 YYMMDD 转为 Long (20YYMMDD)
-        private fun parseDate(yymmdd: String): Long? {
-            return try {
-                if (yymmdd.length == 6) "20$yymmdd".toLong() else null
-            } catch (e: Exception) { null }
-        }
+    /** 序列号范围生成（v1.3）：template=清洗后 UDI 前缀（含末尾 "21"），startSerial=起始流水号（可被用户修改），
+     *  parse=起始码的解析结果（表格按 DI/批号/日期一次性 +N 用） */
+    data class SerialTemplate(val template: String, val startSerial: String, val parse: ParseResult)
+
+    /**
+     * 从扫描原始码提取序列号模板（范围生成用）。
+     * 清洗规则与脚本 cleanUDI 一致（去所有非字母数字并转大写），但先用 Gs1Parser 按 AI
+     * 精确切出 (21) 边界——避免脚本贪婪正则 .*21 在流水号含 "21" 时切错前缀。
+     * 要求：(21) 存在、位于码尾、纯数字。不满足返回 null（调用方提示用户）。
+     */
+    fun extractSerialTemplate(raw: String): SerialTemplate? {
+        if (raw.isBlank()) return null
+        val parsed = parse(raw)
+        val serial = parsed.serial?.uppercase() ?: return null
+        if (serial.isEmpty() || !serial.all { it.isDigit() }) return null
+
+        // 兼容扫码引擎的 ISO/IEC 15424 符识前缀（]C1/]Q1/]d2 等），与 preprocess 同规则剥掉
+        var s = raw.trim()
+        if (s.startsWith("]") && s.length >= 3) s = s.substring(3)
+        val cleaned = s.filter { it.isLetterOrDigit() }.uppercase()
+        if (!cleaned.endsWith(serial)) return null
+        val template = cleaned.dropLast(serial.length)
+        if (!template.endsWith("21")) return null
+        return SerialTemplate(template, serial, parsed)
     }
 
     /** 核心解析方法 */
@@ -227,5 +249,23 @@ object Gs1Parser {
         val remaining = if (remainingStart < s.length) s.substring(remainingStart) else ""
 
         return value to remaining
+    }
+
+    /**
+     * 日期字符串归一化工具
+     * 将 "2026-05-20", "2026/05/20", "20260520" 统一转换为 "260520" 格式
+     */
+    fun normalizeDateToYYMMDD(dateStr: String?): String? {
+        if (dateStr.isNullOrBlank()) return null
+
+        // 1. 过滤掉所有非数字字符（抛弃 -, /, 空格等）
+        val digits = dateStr.filter { it.isDigit() }
+
+        // 2. 根据剩余纯数字的长度进行截断处理
+        return when (digits.length) {
+            8 -> digits.substring(2) // 如 20260520 -> 260520
+            6 -> digits              // 如 260520 -> 260520
+            else -> null             // 长度不合规，返回 null 抛给业务层处理
+        }
     }
 }

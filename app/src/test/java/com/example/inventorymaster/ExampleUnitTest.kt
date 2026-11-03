@@ -21,7 +21,7 @@ class Gs1ParserTest {
         assertTrue("应该是 UDI", result.isUdi)
         assertEquals("DI 匹配", "06912345678901", result.di)
         assertEquals("批号 匹配", "BATCH001", result.batch)
-        assertEquals("效期 匹配", 20251231L, result.expiry)
+        assertEquals("效期 匹配", "251231", result.expiry)
     }
 
     // 测试用例 2: 机器原始格式 (带 FNC1/GS 分隔符)
@@ -40,7 +40,7 @@ class Gs1ParserTest {
         assertTrue("应该是 UDI", result.isUdi)
         assertEquals("DI 匹配", "06935771606332", result.di)
         assertEquals("批号 匹配", "2501010420", result.batch) // 确保没把后面的 17 吃进去
-        assertEquals("效期 匹配", 20260727L, result.expiry)
+        assertEquals("效期 匹配", "260727", result.expiry)
     }
 
     // 测试用例 3: 只有 DI 的情况

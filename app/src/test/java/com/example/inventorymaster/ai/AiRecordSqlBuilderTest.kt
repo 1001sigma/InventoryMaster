@@ -110,4 +110,34 @@ class AiRecordSqlBuilderTest {
         assertEquals(countWhere, detailWhere)
         assertEquals(count.bindArgs, detail.bindArgs)
     }
+
+    @Test
+    fun `查验状态与厂家多维联合筛选构建正确`() {
+        // 未查验 + 冷藏库 + 西门子
+        val queryUnverified = AiRecordQuery(
+            location = "冷藏库",
+            manufacturer = "西门子",
+            isVerified = false
+        )
+        val builtUnverified = AiRecordSqlBuilder.build(queryUnverified, zone)
+        assertTrue(builtUnverified.sql.contains("r.location LIKE ?"))
+        assertTrue(builtUnverified.sql.contains("p.manufacturer LIKE ?"))
+        assertTrue(builtUnverified.sql.contains("r.is_verified = ?"))
+        assertEquals("%冷藏库%", builtUnverified.bindArgs[0])
+        assertEquals("%西门子%", builtUnverified.bindArgs[1])
+        assertEquals(0, builtUnverified.bindArgs[2])
+
+        // 已查验
+        val queryVerified = AiRecordQuery(
+            isVerified = true
+        )
+        val builtVerified = AiRecordSqlBuilder.build(queryVerified, zone)
+        assertTrue(builtVerified.sql.contains("r.is_verified = ?"))
+        assertEquals(1, builtVerified.bindArgs.size)
+        assertEquals(1, builtVerified.bindArgs[0])
+
+        // 连表与任务名称
+        assertTrue(builtVerified.sql.contains("LEFT JOIN inventory_sessions s ON r.sessionId = s.id"))
+        assertTrue(builtVerified.sql.contains("s.name AS \"任务名称\""))
+    }
 }

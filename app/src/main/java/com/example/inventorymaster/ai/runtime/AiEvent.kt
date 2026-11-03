@@ -1,5 +1,6 @@
 package com.example.inventorymaster.ai.runtime
 
+import com.example.inventorymaster.ai.agent.QuestionItem
 import com.example.inventorymaster.ai.agent.UiAction
 import com.example.inventorymaster.ai.provider.AiServiceException
 import com.example.inventorymaster.ai.provider.AiToolCall
@@ -27,11 +28,21 @@ sealed class AiEvent {
     /** CONFIRM 等待超时（按拒绝处理）；UI 应关闭对应的确认弹窗，避免"弹窗挂着但已失效" */
     data class ConfirmTimedOut(val requestId: String) : AiEvent()
 
+    /** ask_question 工具等待用户在卡片上选择/输入答复；用 respondQuestion 回传 */
+    data class AwaitingQuestion(val requestId: String, val questions: List<QuestionItem>) : AiEvent()
+
+    /** ask_question 等待超时：UI 自动收起问答卡片并按跳过处理 */
+    data class QuestionTimedOut(val requestId: String) : AiEvent()
+
     /** 工具结果携带的界面动作（uiAction） */
     data class ActionAvailable(val action: UiAction) : AiEvent()
 
-    /** 对话轮完成：最终回答（已写入 memory） */
-    data class Completed(val answer: String) : AiEvent()
+    /** 对话轮完成：最终回答（已写入 memory）+ 整轮耗时与所用模型（UI 展示用） */
+    data class Completed(
+        val answer: String,
+        val durationMs: Long? = null,
+        val model: String? = null
+    ) : AiEvent()
 
     /** 失败（memory 已写入兜底文案） */
     data class Failed(val error: AiServiceException) : AiEvent()

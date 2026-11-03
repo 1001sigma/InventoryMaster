@@ -1,11 +1,12 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    id("com.google.devtools.ksp") version "2.0.21-1.0.28"
-    kotlin("plugin.serialization") version "2.0.21" apply false
+    id("com.google.devtools.ksp") version "2.3.12"
+    kotlin("plugin.serialization") version "2.4.0" apply false
 }
 
 android {
@@ -64,9 +65,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-    kotlinOptions {
-        jvmTarget = "11"
-    }
     testOptions {
         unitTests {
             // 纯 JVM 单测中 android.util.Log 等框架方法返回默认值而非抛异常
@@ -84,6 +82,19 @@ android {
             version = "4.1.2"
         }
     }
+}
+
+// Kotlin 2.4：kotlinOptions DSL 已移除，jvmTarget 统一走 compilerOptions
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_11)
+    }
+}
+
+composeCompiler {
+    stabilityConfigurationFiles.addAll(
+        rootProject.layout.projectDirectory.file("compose_compiler_config.conf")
+    )
 }
 
 dependencies {
@@ -104,7 +115,8 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     // --- 数据库 Room ---
-    val room_version = "2.6.1"
+    // 2.7+：KSP2（KSP 2.3.x）兼容所需，2.6.1 在 KSP2 下报 "unexpected jvm signature V"
+    val room_version = "2.7.2"
     implementation("androidx.room:room-runtime:$room_version")
     implementation("androidx.room:room-ktx:$room_version") // 支持协程
     ksp("androidx.room:room-compiler:$room_version")     // 编译器
@@ -160,6 +172,9 @@ dependencies {
 
     // ========== ONNX Runtime (YOLO 推理) ==========
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
+
+    // ========== 本地大模型推理 (LiteRT-LM, Gemma 4 E2B / Qwen3-4B) ==========
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.17.1")
 
     // ========== Markdown 渲染 ==========
     // 0.31.0 起表格单元格 weight(1f) 等分列宽（0.28.0 的 weight 填充块模型导致表头与数据错位）

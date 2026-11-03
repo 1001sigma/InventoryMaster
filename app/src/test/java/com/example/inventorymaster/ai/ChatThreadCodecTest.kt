@@ -1,5 +1,8 @@
 package com.example.inventorymaster.ai
 
+import com.example.inventorymaster.ai.agent.ExpiredProductCardData
+import com.example.inventorymaster.ai.agent.ProductCardListCodec
+import com.example.inventorymaster.ai.agent.UiAction
 import com.example.inventorymaster.ai.memory.ChatThreadCodec
 import com.example.inventorymaster.ai.memory.ConversationMemory
 import com.example.inventorymaster.ai.provider.AiMessage
@@ -68,5 +71,66 @@ class ChatThreadCodecTest {
 
         assertEquals(exported.map { it.role }, restored.messagesForRequest().map { it.role })
         assertEquals(exported, restored.messagesForRequest())
+    }
+
+    @Test
+    fun `耗时与模型ID随快照往返无损`() {
+        val original = ConversationMemory()
+        original.openUserTurn("你好")
+        original.closeTurn("库存共 12 件", durationMs = 5200L, model = "glm-5.3")
+
+        val restored = ConversationMemory()
+        restored.restoreFrom(ChatThreadCodec.toMessages(ChatThreadCodec.toRows("42", original.messagesForRequest())))
+        val reply = restored.messagesForRequest().single { it.role == "assistant" }
+        assertEquals(5200L, reply.durationMs)
+        assertEquals("glm-5.3", reply.model)
+    }
+
+    @Test
+    fun `卡片JSON随快照往返无损`() {
+        val cardJson = ProductCardListCodec.toJson(
+            UiAction.ShowProductCardList(
+                title = "查询结果中的重点物资：",
+                products = listOf(
+                    ExpiredProductCardData(
+                        productKey = "BG-100",
+                        productName = "血气测定试剂盒（电极法）",
+                        batchNumber = "260416F",
+                        expiryDateStr = "2026-10-12",
+                        quantity = 10.0,
+                        sessionId = "24",
+                        recordId = 77L
+                    )
+                )
+            )
+        )
+        val original = ConversationMemory()
+        original.openUserTurn("查近效期")
+        original.closeTurn("共 1 条近效期", cardActionJson = cardJson)
+
+        val restored = ConversationMemory()
+        restored.restoreFrom(ChatThreadCodec.toMessages(ChatThreadCodec.toRows("42", original.messagesForRequest())))
+        val reply = restored.messagesForRequest().single { it.role == "assistant" }
+        assertEquals(cardJson, reply.cardActionJson)
+
+        // 反序列化回卡片对象，字段逐项相等（这是 ChatViewModel.displayMessages 的恢复路径）
+        val card = ProductCardListCodec.fromJson(reply.cardActionJson!!)
+        requireNotNull(card)
+        assertEquals("查询结果中的重点物资：", card.title)
+        val p = card.products.single()
+        assertEquals("BG-100", p.productKey)
+        assertEquals("血气测定试剂盒（电极法）", p.productName)
+        assertEquals("260416F", p.batchNumber)
+        assertEquals("2026-10-12", p.expiryDateStr)
+        assertEquals(10.0, p.quantity, 0.0)
+        assertEquals("24", p.sessionId)
+        assertEquals(77L, p.recordId)
+    }
+
+    @Test
+    fun `坏JSON与旧数据反序列化为null不崩`() {
+        assertEquals(null, ProductCardListCodec.fromJson("不是JSON"))
+        assertEquals(null, ProductCardListCodec.fromJson("""{"type":"unknown"}"""))
+        assertEquals(null, ProductCardListCodec.fromJson("""{"type":"productList"}""")) // 缺 products 数组
     }
 }

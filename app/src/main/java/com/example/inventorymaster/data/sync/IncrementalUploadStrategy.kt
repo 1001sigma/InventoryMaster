@@ -1,7 +1,6 @@
 package com.example.inventorymaster.data.sync
 
 import android.util.Log
-import com.example.inventorymaster.data.SettingsRepository
 import com.example.inventorymaster.data.dao.ProductDao
 import com.example.inventorymaster.data.dao.SessionDao
 import com.example.inventorymaster.data.dao.StockRecordDao
@@ -13,13 +12,12 @@ import com.example.inventorymaster.data.network.InventoryApiService
 /**
  * 增量上传策略：将本地 sync_status=1 的脏数据推送到服务端，
  * 并根据服务端返回的逐条结果（Phase 1）只标记成功记录为已同步。
- * 推送成功后记录推送锚点（Phase 2）。
+ * 服务端地址由调用方经 ServerConnectionManager 解析后放入 [SyncContext.ip]。
  */
 class IncrementalUploadStrategy(
     private val sessionDao: SessionDao,
     private val stockRecordDao: StockRecordDao,
     private val productDao: ProductDao,
-    private val settingsRepository: SettingsRepository,
     private val timestampManager: TimestampManager
 ) : SyncStrategy {
 
@@ -49,11 +47,7 @@ class IncrementalUploadStrategy(
                 products = relatedProducts
             )
 
-            val serverIp = settingsRepository.getServerIp()
-            if (serverIp.isBlank()) {
-                return Result.failure(Exception("未设置服务器 IP 地址"))
-            }
-            val api = InventoryApiService.Companion.create(serverIp)
+            val api = InventoryApiService.Companion.create(context.ip)
             val retryPolicy = RetryPolicy()
             val response = retryPolicy.execute { api.pushData(
                 sessionUuid = currentUuid,
@@ -87,14 +81,7 @@ class IncrementalUploadStrategy(
                     if (successIds.isNotEmpty()) {
                         stockRecordDao.markAsSynced(successIds)
                     }
-
-                    // Phase 2: 记录推送锚点
-                    val maxPushedTime = dirtyRecords
-                        .filter { it.id in successIds }
-                        .maxOfOrNull { it.lastUpdateTime } ?: 0L
-                    if (maxPushedTime > 0L) {
-                        timestampManager.saveLastPushAnchor(context.sessionId, maxPushedTime)
-                    }
+                    // M0：推送锚点已移除（push 无游标，脏标记 syncStatus 即真相；时间戳由服务端盖章）
 
                     val message = if (failedUuids.isEmpty()) {
                         "成功同步 ${successIds.size} 条记录"

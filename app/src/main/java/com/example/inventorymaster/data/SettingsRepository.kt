@@ -7,6 +7,10 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.example.inventorymaster.ai.provider.AiProviderConfig
 import com.example.inventorymaster.data.model.RecordCardConfig
 import com.example.inventorymaster.data.model.RecordCardSlot
+import com.example.inventorymaster.ui.theme.ColorTuple
+import com.example.inventorymaster.ui.theme.ModernColorSchemes
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +21,8 @@ val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ap
 
 data class UserSettings(
     val seedColor: Long = 0xFF4CAF50,
+    val activeColorTupleSerialized: String = "",
+    val customColorTuplesJson: String = "[]",
     val useDynamicColor: Boolean = false,
     val isAmoledMode: Boolean = false,
     val themeMode: Int = 0,
@@ -25,6 +31,8 @@ data class UserSettings(
     val enableMultiScan: Boolean = false,
     val enableDiValidation: Boolean = false,
     val useOpenCV: Boolean = true,
+    // 拍照原图存系统相册（默认关）
+    val saveOriginalPhotoToGallery: Boolean = false,
     // 扫描框尺寸记忆（相对预览容器的归一化比例，0 = 未设置，用默认值）
     val scanFrameRatioW: Float = 0f,
     val scanFrameRatioH: Float = 0f,
@@ -53,7 +61,17 @@ data class UserSettings(
     val signatureOffsetY: Float = 0.85f,
     val signatureScale: Float = 0.22f,
     val signatureOpacity: Float = 1f,
+    // PDF 本地储存位置（SAF 文件夹 tree URI，持久授权）；空 = 每次导出弹系统选位器
+    val pdfExportDirUri: String = "",
     val nearExpiryThresholdDays: Int = 30,
+    // 快捷计算器：再次打开时是否携带上次计算结果
+    val calcRetainLastResult: Boolean = true,
+    // 长光模式（智能识别）：自动识别长光华医 21 位条码并提取批号搜索
+    val enableHybiomeMode: Boolean = true,
+    // 已查验物料自动移至末尾（默认关，即方案 A 严格保持原录入顺序）
+    val sinkVerifiedItems: Boolean = false,
+    // 空搜索不显示数据（测试项：默认关；开启后搜索框为空时不自动展示全量物料，仅在输入关键字或扫码后展示）
+    val emptySearchShowsNothing: Boolean = false,
     // 记录卡片五个信息位的字段映射（设置 → 盘存设置 → 记录卡片样式）
     val recordCardConfig: RecordCardConfig = RecordCardConfig(),
     // AI 设置 - 新版（服务商列表 + 激活 ID）
@@ -82,6 +100,26 @@ data class UserSettings(
         return providers.find { it.id == activeProviderId }
             ?: providers.firstOrNull()
     }
+
+    /** 获取当前生效的色彩方案 (ColorTuple) */
+    fun getActiveColorTuple(): ColorTuple {
+        ColorTuple.fromSerializedString(activeColorTupleSerialized)?.let { return it }
+        // 兼容旧版 seedColor: Long
+        val argb = seedColor.toInt()
+        val matchPreset = ModernColorSchemes.allSchemes.find { it.primary.toArgb() == argb }
+        return matchPreset?.asColorTuple() ?: ColorTuple(Color(argb))
+    }
+
+    /** 获取用户自定义保存的调色板列表 */
+    fun getCustomColorTuples(): List<ColorTuple> {
+        return try {
+            val type = object : TypeToken<List<String>>() {}.type
+            val list: List<String> = Gson().fromJson(customColorTuplesJson, type) ?: emptyList()
+            list.mapNotNull { ColorTuple.fromSerializedString(it) }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 }
 
 class SettingsRepository(private val context: Context) {
@@ -90,6 +128,8 @@ class SettingsRepository(private val context: Context) {
 
     private object Keys {
         val SEED_COLOR = longPreferencesKey("seed_color")
+        val ACTIVE_COLOR_TUPLE = stringPreferencesKey("active_color_tuple")
+        val CUSTOM_COLOR_TUPLES = stringPreferencesKey("custom_color_tuples")
         val USE_DYNAMIC_COLOR = booleanPreferencesKey("use_dynamic_color")
         val IS_AMOLED = booleanPreferencesKey("is_amoled")
         val THEME_MODE = intPreferencesKey("theme_mode")
@@ -98,6 +138,7 @@ class SettingsRepository(private val context: Context) {
         val ENABLE_MULTI_SCAN = booleanPreferencesKey("enable_multi_scan")
         val ENABLE_DI_VALIDATION = booleanPreferencesKey("enable_di_validation")
         val USE_OPENCV = booleanPreferencesKey("use_opencv")
+        val SAVE_ORIGINAL_PHOTO_TO_GALLERY = booleanPreferencesKey("save_original_photo_to_gallery")
         val SCAN_FRAME_RATIO_W = floatPreferencesKey("scan_frame_ratio_w")
         val SCAN_FRAME_RATIO_H = floatPreferencesKey("scan_frame_ratio_h")
         val OCR_FRAME_RATIO_W = floatPreferencesKey("ocr_frame_ratio_w")
@@ -120,7 +161,13 @@ class SettingsRepository(private val context: Context) {
         val SIGNATURE_OFFSET_Y = floatPreferencesKey("signature_offset_y")
         val SIGNATURE_SCALE = floatPreferencesKey("signature_scale")
         val SIGNATURE_OPACITY = floatPreferencesKey("signature_opacity")
+        // PDF 本地储存位置（SAF 文件夹 tree URI，持久授权）
+        val PDF_EXPORT_DIR_URI = stringPreferencesKey("pdf_export_dir_uri")
         val NEAR_EXPIRY_THRESHOLD = intPreferencesKey("near_expiry_threshold_days")
+        val CALC_RETAIN_LAST_RESULT = booleanPreferencesKey("calc_retain_last_result")
+        val ENABLE_HYBIOME_MODE = booleanPreferencesKey("enable_hybiome_mode")
+        val SINK_VERIFIED_ITEMS = booleanPreferencesKey("sink_verified_items")
+        val EMPTY_SEARCH_SHOWS_NOTHING = booleanPreferencesKey("empty_search_shows_nothing")
         // 记录卡片字段配置（五个信息位各自显示的字段 id）
         val CARD_FIELD_UDI = stringPreferencesKey("card_field_udi")
         val CARD_FIELD_BATCH = stringPreferencesKey("card_field_batch")
@@ -142,6 +189,8 @@ class SettingsRepository(private val context: Context) {
         .map { preferences ->
             UserSettings(
                 seedColor = preferences[Keys.SEED_COLOR] ?: 0xFF4CAF50,
+                activeColorTupleSerialized = preferences[Keys.ACTIVE_COLOR_TUPLE] ?: "",
+                customColorTuplesJson = preferences[Keys.CUSTOM_COLOR_TUPLES] ?: "[]",
                 useDynamicColor = preferences[Keys.USE_DYNAMIC_COLOR] ?: false,
                 isAmoledMode = preferences[Keys.IS_AMOLED] ?: false,
                 themeMode = preferences[Keys.THEME_MODE] ?: 0,
@@ -150,6 +199,7 @@ class SettingsRepository(private val context: Context) {
                 enableMultiScan = preferences[Keys.ENABLE_MULTI_SCAN] ?: false,
                 enableDiValidation = preferences[Keys.ENABLE_DI_VALIDATION] ?: false,
                 useOpenCV = preferences[Keys.USE_OPENCV] ?: true,
+                saveOriginalPhotoToGallery = preferences[Keys.SAVE_ORIGINAL_PHOTO_TO_GALLERY] ?: false,
                 scanFrameRatioW = preferences[Keys.SCAN_FRAME_RATIO_W] ?: 0f,
                 scanFrameRatioH = preferences[Keys.SCAN_FRAME_RATIO_H] ?: 0f,
                 ocrFrameRatioW = preferences[Keys.OCR_FRAME_RATIO_W] ?: 0f,
@@ -171,7 +221,12 @@ class SettingsRepository(private val context: Context) {
                 signatureOffsetY = preferences[Keys.SIGNATURE_OFFSET_Y] ?: 0.85f,
                 signatureScale = preferences[Keys.SIGNATURE_SCALE] ?: 0.22f,
                 signatureOpacity = preferences[Keys.SIGNATURE_OPACITY] ?: 1f,
+                pdfExportDirUri = preferences[Keys.PDF_EXPORT_DIR_URI] ?: "",
                 nearExpiryThresholdDays = preferences[Keys.NEAR_EXPIRY_THRESHOLD] ?: 30,
+                calcRetainLastResult = preferences[Keys.CALC_RETAIN_LAST_RESULT] ?: true,
+                enableHybiomeMode = preferences[Keys.ENABLE_HYBIOME_MODE] ?: true,
+                sinkVerifiedItems = preferences[Keys.SINK_VERIFIED_ITEMS] ?: false,
+                emptySearchShowsNothing = preferences[Keys.EMPTY_SEARCH_SHOWS_NOTHING] ?: false,
                 recordCardConfig = RecordCardConfig(
                     udiField = preferences[Keys.CARD_FIELD_UDI] ?: RecordCardSlot.UDI.defaultField.id,
                     batchField = preferences[Keys.CARD_FIELD_BATCH] ?: RecordCardSlot.BATCH.defaultField.id,
@@ -306,6 +361,41 @@ class SettingsRepository(private val context: Context) {
     // 通用设置写入方法
     // ============================================================
 
+    suspend fun updateColorTuple(tuple: ColorTuple) {
+        context.dataStore.edit { preferences ->
+            preferences[Keys.ACTIVE_COLOR_TUPLE] = tuple.toSerializedString()
+            preferences[Keys.SEED_COLOR] = tuple.primary.toArgb().toLong()
+        }
+    }
+
+    suspend fun getCustomColorTuples(): List<ColorTuple> {
+        val json = context.dataStore.data.first()[Keys.CUSTOM_COLOR_TUPLES] ?: "[]"
+        return try {
+            val type = object : TypeToken<List<String>>() {}.type
+            val list: List<String> = gson.fromJson(json, type) ?: emptyList()
+            list.mapNotNull { ColorTuple.fromSerializedString(it) }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun addCustomColorTuple(tuple: ColorTuple) {
+        val current = getCustomColorTuples().toMutableList()
+        val serialized = tuple.toSerializedString()
+        if (!current.any { it.toSerializedString() == serialized }) {
+            current.add(tuple)
+            val json = gson.toJson(current.map { it.toSerializedString() })
+            context.dataStore.edit { it[Keys.CUSTOM_COLOR_TUPLES] = json }
+        }
+    }
+
+    suspend fun removeCustomColorTuple(tuple: ColorTuple) {
+        val serialized = tuple.toSerializedString()
+        val current = getCustomColorTuples().filterNot { it.toSerializedString() == serialized }
+        val json = gson.toJson(current.map { it.toSerializedString() })
+        context.dataStore.edit { it[Keys.CUSTOM_COLOR_TUPLES] = json }
+    }
+
     suspend fun updateSeedColor(color: Long) {
         context.dataStore.edit { it[Keys.SEED_COLOR] = color }
     }
@@ -340,6 +430,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun updateUseOpenCV(use: Boolean) {
         context.dataStore.edit { it[Keys.USE_OPENCV] = use }
+    }
+
+    suspend fun updateSaveOriginalPhotoToGallery(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.SAVE_ORIGINAL_PHOTO_TO_GALLERY] = enabled }
     }
 
     suspend fun updateScanFrameRatio(w: Float, h: Float) {
@@ -441,8 +535,29 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.SIGNATURE_OPACITY] = opacity.coerceIn(0.1f, 1f) }
     }
 
+    /** PDF 本地储存位置：写入 SAF tree URI；空字符串 = 清除（恢复每次弹系统选位器） */
+    suspend fun updatePdfExportDirUri(uri: String) {
+        context.dataStore.edit { it[Keys.PDF_EXPORT_DIR_URI] = uri }
+    }
+
     suspend fun updateNearExpiryThreshold(days: Int) {
         context.dataStore.edit { it[Keys.NEAR_EXPIRY_THRESHOLD] = days }
+    }
+
+    suspend fun updateCalcRetainLastResult(retain: Boolean) {
+        context.dataStore.edit { it[Keys.CALC_RETAIN_LAST_RESULT] = retain }
+    }
+
+    suspend fun updateHybiomeMode(enable: Boolean) {
+        context.dataStore.edit { it[Keys.ENABLE_HYBIOME_MODE] = enable }
+    }
+
+    suspend fun updateSinkVerifiedItems(enable: Boolean) {
+        context.dataStore.edit { it[Keys.SINK_VERIFIED_ITEMS] = enable }
+    }
+
+    suspend fun updateEmptySearchShowsNothing(enable: Boolean) {
+        context.dataStore.edit { it[Keys.EMPTY_SEARCH_SHOWS_NOTHING] = enable }
     }
 
     suspend fun updateRecordCardConfig(config: RecordCardConfig) {

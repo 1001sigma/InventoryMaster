@@ -46,4 +46,25 @@ class BatchCodeProcessorTest {
         val result = BatchCodeProcessor.process(input)
         assertNull(result)
     }
+
+    // 用例 5: 测试智能识别条码特征
+    @Test
+    fun isHybiomeBarcode_detection() {
+        org.junit.Assert.assertTrue(BatchCodeProcessor.isHybiomeBarcode("065006200810024022612"))
+        org.junit.Assert.assertTrue(BatchCodeProcessor.isHybiomeBarcode("  06500620 08100 24022612  "))
+        org.junit.Assert.assertFalse(BatchCodeProcessor.isHybiomeBarcode("(01)06912345678901(17)251231(10)BATCH001"))
+        org.junit.Assert.assertFalse(BatchCodeProcessor.isHybiomeBarcode("注射器"))
+        org.junit.Assert.assertFalse(BatchCodeProcessor.isHybiomeBarcode("20082402"))
+        org.junit.Assert.assertFalse(BatchCodeProcessor.isHybiomeBarcode(""))
+    }
+
+    // 用例 6: 测试批号安全提取
+    @Test
+    fun extractBatch_test() {
+        assertEquals("20082402", BatchCodeProcessor.extractBatch("065006200810024022612"))
+        assertEquals("20082402", BatchCodeProcessor.extractBatch("  06500620 08100 24022612  "))
+        assertNull(BatchCodeProcessor.extractBatch("注射器"))
+        assertNull(BatchCodeProcessor.extractBatch("20082402"))
+        assertNull(BatchCodeProcessor.extractBatch(null))
+    }
 }

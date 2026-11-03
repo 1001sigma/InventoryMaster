@@ -35,7 +35,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalMinimumInteractiveComponentEnforcement
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -54,6 +54,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import com.example.inventorymaster.ai.agent.ExpiredProductCardData
 import com.example.inventorymaster.viewmodel.ChatMessage
 import kotlinx.coroutines.delay
 
@@ -74,7 +75,8 @@ fun ChatMessageItem(
     isProcessing: Boolean = false,
     canRetry: Boolean = false,
     onRegenerate: () -> Unit = {},
-    onRetry: () -> Unit = {}
+    onRetry: () -> Unit = {},
+    onCardProductClick: (ExpiredProductCardData) -> Unit = {}
 ) {
     val isUser = message.isUser
     val isToolCall = message.isToolCall
@@ -92,31 +94,37 @@ fun ChatMessageItem(
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
         if (isUser) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .clip(
-                        RoundedCornerShape(
-                            topStart = 16.dp,
-                            topEnd = 4.dp,
-                            bottomStart = 16.dp,
-                            bottomEnd = 16.dp
-                        )
-                    )
-                    .background(MaterialTheme.colorScheme.primaryContainer)
-                    .padding(12.dp)
+            // 气泡贴合内容宽度（上限 85%）：外层 Box 定宽 85% 靠右、内层 Column wrap-content——
+            // 原 fillMaxWidth(0.85f) 是恒定撑满 85%，短消息（"你好"）也占大半屏
+            Box(
+                modifier = Modifier.fillMaxWidth(0.85f),
+                contentAlignment = Alignment.CenterEnd
             ) {
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-                if (message.isLoading) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(12.dp),
-                        strokeWidth = 1.5.dp
+                Column(
+                    modifier = Modifier
+                        .clip(
+                            RoundedCornerShape(
+                                topStart = 16.dp,
+                                topEnd = 4.dp,
+                                bottomStart = 16.dp,
+                                bottomEnd = 16.dp
+                            )
+                        )
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
+                    if (message.isLoading) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp
+                        )
+                    }
                 }
             }
         } else {
@@ -173,13 +181,25 @@ fun ChatMessageItem(
                             BreathingDots(Modifier.padding(vertical = 6.dp))
                         } else {
                             MarkdownText(text = message.content)
+
+                            // 产品卡片置于正文下方、操作栏上方（保证正文 -> 卡片 -> 操作栏完整闭环）
+                            message.cardAction?.let { cardPayload ->
+                                ProductCardListWidget(
+                                    cardPayload = cardPayload,
+                                    onCardProductClick = onCardProductClick,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+
                             if (message.isLoading) {
                                 // 流式生成中：内容后跟呼吸点
                                 BreathingDots(Modifier.padding(top = 6.dp))
                             } else {
-                                // 最终回复：淡入操作条（复制/重新生成）
+                                // 最终回复：淡入操作条（复制/耗时·模型/重新生成）——位于最底部！
                                 MessageActionBar(
                                     isProcessing = isProcessing,
+                                    durationMs = message.durationMs,
+                                    model = message.model,
                                     onCopy = copyText,
                                     onRegenerate = onRegenerate
                                 )
@@ -187,10 +207,10 @@ fun ChatMessageItem(
                         }
                     }
                 }
-                if (expandable && expanded && detail != null) {
+                if (expandable && expanded) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = detail,
+                        text = detail.orEmpty(),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.alpha(0.85f)
@@ -232,11 +252,13 @@ private fun BreathingDots(modifier: Modifier = Modifier) {
     }
 }
 
-/** AI 最终回复下的极简操作条：复制（点击变 ✓ + "已复制"）/ 重新生成 */
+/** AI 最终回复下的极简操作条：复制（点击变 ✓ + "已复制"）/ 耗时·模型 / 重新生成 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MessageActionBar(
     isProcessing: Boolean,
+    durationMs: Long?,
+    model: String?,
     onCopy: () -> Unit,
     onRegenerate: () -> Unit
 ) {
@@ -251,7 +273,7 @@ private fun MessageActionBar(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.padding(top = 2.dp)
     ) {
-        CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides androidx.compose.ui.unit.Dp.Unspecified) {
             IconButton(
                 onClick = {
                     onCopy()
@@ -265,6 +287,19 @@ private fun MessageActionBar(
                     modifier = Modifier.size(15.dp),
                     tint = if (copied) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
+            // 耗时与模型 ID 各自缺省时跳过，齐备时以「 · 」分隔（如 5.2s · glm-5.3）
+            val meta = listOfNotNull(
+                durationMs?.takeIf { it > 0 }?.let { formatDuration(it) },
+                model?.takeIf { it.isNotBlank() }
+            )
+            if (meta.isNotEmpty()) {
+                Text(
+                    text = meta.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier.padding(horizontal = 2.dp)
                 )
             }
             IconButton(
@@ -291,6 +326,11 @@ private fun MessageActionBar(
         }
     }
 }
+
+/** 耗时格式化：<60s 显示秒（一位小数），否则分秒 */
+private fun formatDuration(ms: Long): String =
+    if (ms < 60_000) String.format("%.1fs", ms / 1000.0)
+    else "${ms / 60_000}m${(ms % 60_000) / 1000}s"
 
 /** 错误卡片：浅红边框 + 具体错误文案 + 一键重试（docs/AI_UI_OPTIMIZATION.md P0-3） */
 @Composable

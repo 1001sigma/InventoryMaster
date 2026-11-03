@@ -87,4 +87,71 @@ class OpenAiRequestBuilderTest {
         assertTrue(build(emptyList(), stream = true).get("stream").asBoolean)
         assertFalse(build(emptyList(), stream = false).get("stream").asBoolean)
     }
+
+    @Test
+    fun `高级模型超参数在未开启时不包含字段_开启时正确写入JSON`() {
+        // 未开启时：无 temperature, top_p, max_tokens 字段
+        val defaultJson = JsonParser.parseString(
+            OpenAiRequestBuilder.build(
+                gson = gson,
+                model = "test-model",
+                messages = listOf(AiMessage("user", "hi")),
+                temperatureEnabled = false,
+                topPEnabled = false,
+                maxTokensEnabled = false
+            )
+        ).asJsonObject
+
+        assertFalse(defaultJson.has("temperature"))
+        assertFalse(defaultJson.has("top_p"))
+        assertFalse(defaultJson.has("max_tokens"))
+
+        // 开启时：包含对应字段及正确数值
+        val advancedJson = JsonParser.parseString(
+            OpenAiRequestBuilder.build(
+                gson = gson,
+                model = "test-model",
+                messages = listOf(AiMessage("user", "hi")),
+                temperatureEnabled = true,
+                temperature = 0.85f,
+                topPEnabled = true,
+                topP = 0.95f,
+                maxTokensEnabled = true,
+                maxTokens = 2048
+            )
+        ).asJsonObject
+
+        assertTrue(advancedJson.has("temperature"))
+        assertEquals(0.85f, advancedJson.get("temperature").asFloat, 0.001f)
+
+        assertTrue(advancedJson.has("top_p"))
+        assertEquals(0.95f, advancedJson.get("top_p").asFloat, 0.001f)
+
+        assertTrue(advancedJson.has("max_tokens"))
+        assertEquals(2048, advancedJson.get("max_tokens").asInt)
+    }
+
+    @Test
+    fun `智能端点推导_能正确处理带有或不带有v1的BaseUrl`() {
+        val configWithV1 = com.example.inventorymaster.ai.provider.AiProviderConfig(
+            name = "Test",
+            baseUrl = "https://api.openai.com/v1",
+            model = "gpt-4o"
+        )
+        assertEquals("https://api.openai.com/v1/models", configWithV1.resolveModelsEndpoint())
+
+        val configWithoutV1 = com.example.inventorymaster.ai.provider.AiProviderConfig(
+            name = "Test",
+            baseUrl = "https://api.example.com",
+            model = "gpt-4o"
+        )
+        assertEquals("https://api.example.com/v1/models", configWithoutV1.resolveModelsEndpoint())
+
+        val configWithTrailingSlash = com.example.inventorymaster.ai.provider.AiProviderConfig(
+            name = "Test",
+            baseUrl = "https://api.example.com/v1/",
+            model = "gpt-4o"
+        )
+        assertEquals("https://api.example.com/v1/models", configWithTrailingSlash.resolveModelsEndpoint())
+    }
 }

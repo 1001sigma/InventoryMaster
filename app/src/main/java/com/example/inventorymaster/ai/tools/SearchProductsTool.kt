@@ -95,9 +95,9 @@ class SearchProductsTool(
             })
         }
         val content = buildString {
-            append("找到 $total 个匹配产品")
+            append("产品档案查询成功，找到 $total 个匹配产品")
             if (total > returned.size) append("（仅返回前 ${returned.size} 个，可缩小关键词或加大 limit）")
-            append("。完整档案如下：\n")
+            append("。明细如下（请向用户简明汇报产品档案）：\n")
             append(json.toString())
         }
         return ToolResult.success(toolCall, content)

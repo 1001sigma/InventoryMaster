@@ -129,13 +129,7 @@ class QueryRecordsTool(
                     )
                 }
                 val returnedCount = rows?.size() ?: 0
-                if (returnedCount > 3) append("（其余 ${returnedCount - 3} 条见卡片）")
-                append(
-                    "如需跳转：用户要“跳转/打开某条记录”时调用 execute_ui_action(action_type=navigate_to_record)，" +
-                        "session_id 传该记录的任务ID、record_id 传其记录ID；" +
-                        "用户要“跳转盘库页面/跳转任务N”这类不指定记录的跳转，" +
-                        "用 action_type=navigate_to_session，只需 session_id。\n"
-                )
+                append("（卡片已展示明细；用户明确要求跳转时才调用 execute_ui_action）\n")
             }
         }
 
@@ -164,6 +158,7 @@ class QueryRecordsTool(
         val cardProducts = mutableListOf<ExpiredProductCardData>()
         for (element in rows.take(MAX_CARDS)) {
             val obj = element.asJsonObject
+            val remarks = obj.get("备注")?.takeIf { !it.isJsonNull }?.asString ?: ""
             cardProducts.add(
                 ExpiredProductCardData(
                     productKey = obj.get("产品编码")?.takeIf { !it.isJsonNull }?.asString ?: "",
@@ -174,7 +169,17 @@ class QueryRecordsTool(
                         try { it.asDouble } catch (e: Exception) { 0.0 }
                     } ?: 0.0,
                     sessionId = obj.get("任务ID")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                    recordId = obj.get("记录ID")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                    recordId = obj.get("记录ID")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                    sessionName = obj.get("任务名称")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                    location = obj.get("库位")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                    manufacturer = obj.get("厂家")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                    specification = obj.get("规格")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                    unit = obj.get("单位")?.takeIf { !it.isJsonNull }?.asString ?: "件",
+                    isVerified = obj.get("is_verified")?.takeIf { !it.isJsonNull }?.let { it.asInt == 1 } ?: remarks.contains("已查验"),
+                    productionDateStr = obj.get("生产日期")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                    remarks = remarks,
+                    materialCode = obj.get("物料编码")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                    di = obj.get("DI")?.takeIf { !it.isJsonNull }?.asString ?: ""
                 )
             )
         }

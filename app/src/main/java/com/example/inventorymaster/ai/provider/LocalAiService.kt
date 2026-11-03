@@ -1,32 +1,57 @@
 package com.example.inventorymaster.ai.provider
 
 import android.util.Log
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
-import kotlinx.coroutines.Dispatchers
+import com.example.inventorymaster.ai.local.LocalLlmRuntime
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.withContext
+import java.io.File
 
+/**
+ * 本地模型服务（LiteRT-LM 引擎，见 ai/local/LocalLlmRuntime）。
+ *
+ * 纯文本进出：工具协议由 AiRuntime 按 FC=false 路由到 JsonToolCallStrategy
+ * （systemPrompt 已内嵌 JSON 工具约定）。这里**绝不再**注入自有工具说明或解析
+ * 回复——旧实现的双重协议注入（{"name":..}）与剥空 content 的 parseResponse
+ * 会让 JSON 策略丢掉工具调用意图。
+ */
 class LocalAiService(
     private val config: AiProviderConfig
 ) : AiService {
 
-    /** 本地模型一律不支持原生 Function Calling（走 JSON 协议），暂不支持流式 */
-    override val capabilities = AiCapabilities(functionCalling = false, streaming = false)
+    /**
+     * 本地模型不支持原生 Function Calling（走 JSON 协议）；流式已接通（LiteRT-LM
+     * sendMessageAsync 逐 token 增量），配合 AiRuntime 的信封抑制规则外显。
+     */
+    override val capabilities = AiCapabilities(functionCalling = false, streaming = true)
+
+    /** 本地推理（2.5GB 级 int4 模型）慢于云端一个量级：600s 超时预算 */
+    override val chatTimeoutMs: Long = 600_000
+
+    override val modelId: String get() = config.model
+
+    private fun requireModelPath(): String {
+        val path = config.localModelPath
+        if (path.isNullOrBlank() || !File(path).exists()) {
+            throw AiServiceException(
+                AiErrorKind.NOT_CONFIGURED,
+                "本地模型文件未就绪，请到 AI 设置页下载或导入（${config.model}）"
+            )
+        }
+        return path
+    }
 
     override suspend fun chat(
         messages: List<AiMessage>,
         systemPrompt: String?,
         tools: List<AiToolDefinition>?
-    ): AiResponse = withContext(Dispatchers.Default) {
-        try {
-            val prompt = buildPrompt(messages, systemPrompt, tools)
-            val result = simulateLocalInference(prompt)
-            parseResponse(result, tools)
+    ): AiResponse {
+        val modelPath = requireModelPath()
+        return try {
+            AiResponse(content = LocalLlmRuntime.chat(modelPath, messages, systemPrompt))
         } catch (e: Exception) {
-            Log.e("LocalAiService", "Chat failed", e)
-            AiResponse(content = "本地模型推理失败: ${e.message}")
+            if (e is AiServiceException) throw e
+            Log.e("LocalAiService", "Local inference failed", e)
+            throw AiServiceException(AiErrorKind.UNKNOWN, "本地模型推理失败: ${e.message}", e)
         }
     }
 
@@ -36,112 +61,24 @@ class LocalAiService(
         tools: List<AiToolDefinition>?
     ): Flow<StreamChunk> = flow {
         try {
-            val prompt = buildPrompt(messages, systemPrompt, tools)
-            val result = simulateLocalInference(prompt)
-            // 占位推理：模拟逐字流式
-            for (char in result) {
-                emit(StreamChunk.Text(char.toString()))
+            val modelPath = requireModelPath()
+            LocalLlmRuntime.chatStream(modelPath, messages, systemPrompt).collect { delta ->
+                emit(StreamChunk.Text(delta))
             }
             emit(StreamChunk.Completed)
         } catch (e: Exception) {
             Log.e("LocalAiService", "Stream failed", e)
-            emit(StreamChunk.Error("本地模型推理失败: ${e.message}"))
+            emit(StreamChunk.Error(e.message ?: "本地模型推理失败"))
         }
     }
 
     override suspend fun isAvailable(): Boolean {
-        return config.localModelPath != null
+        val path = config.localModelPath ?: return false
+        return File(path).exists()
     }
 
     override fun isLocal() = true
 
-    /**
-     * 模拟本地推理 - 实际实现将由 LlmEngine 提供
-     * TODO: 接入 llama.cpp binding 后替换此方法
-     */
-    private suspend fun simulateLocalInference(prompt: String): String {
-        return "本地模型 (${config.model}) 尚未接入推理引擎，请使用云端服务或等待后续更新。"
-    }
-
-    private fun buildPrompt(
-        messages: List<AiMessage>,
-        systemPrompt: String?,
-        tools: List<AiToolDefinition>?
-    ): String {
-        val sb = StringBuilder()
-
-        systemPrompt?.let {
-            sb.appendLine("[INST] <<SYS>>")
-            sb.appendLine(it)
-            sb.appendLine("<</SYS>>")
-            sb.appendLine()
-        }
-
-        tools?.let { toolDefs ->
-            if (toolDefs.isNotEmpty()) {
-                sb.appendLine("可用工具：")
-                toolDefs.forEach { tool ->
-                    sb.appendLine("- ${tool.name}: ${tool.description}")
-                    sb.appendLine("  参数: ${tool.parameters}")
-                }
-                sb.appendLine()
-                sb.appendLine("如需调用工具，请输出 JSON 格式：{\"name\": \"工具名\", \"arguments\": {参数}}")
-                sb.appendLine()
-            }
-        }
-
-        messages.forEach { msg ->
-            when (msg.role) {
-                "system" -> {
-                    sb.appendLine("[INST] <<SYS>>")
-                    sb.appendLine(msg.content)
-                    sb.appendLine("<</SYS>>")
-                    sb.appendLine()
-                }
-                "user" -> {
-                    sb.appendLine("[INST] ${msg.content} [/INST]")
-                }
-                "assistant" -> {
-                    msg.toolCalls?.let { tcList ->
-                        tcList.forEach { tc ->
-                            sb.appendLine("<tool_call>{\"name\":\"${tc.name}\",\"arguments\":${tc.arguments}}</tool_call>")
-                        }
-                    } ?: run {
-                        sb.appendLine("${msg.content}</s>")
-                    }
-                }
-                "tool" -> {
-                    sb.appendLine("Observation: ${msg.content}</s>")
-                }
-                else -> {
-                    sb.appendLine(msg.content)
-                }
-            }
-        }
-
-        return sb.toString()
-    }
-
-    private fun parseResponse(output: String, tools: List<AiToolDefinition>?): AiResponse {
-        if (tools.isNullOrEmpty()) return AiResponse(content = output)
-
-        val toolCallPattern = """(?:<tool_call>|```json)\s*(\{.*?\})\s*(?:</tool_call>|```)""".toRegex()
-        val match = toolCallPattern.find(output)
-
-        return if (match != null) {
-            try {
-                val json = JsonParser.parseString(match.groupValues[1]).asJsonObject
-                val toolCall = AiToolCall(
-                    id = "local_${System.currentTimeMillis()}",
-                    name = json.get("name")?.asString ?: return AiResponse(content = output),
-                    arguments = json.getAsJsonObject("arguments") ?: JsonObject()
-                )
-                AiResponse(content = "", toolCalls = listOf(toolCall))
-            } catch (_: Exception) {
-                AiResponse(content = output)
-            }
-        } else {
-            AiResponse(content = output)
-        }
-    }
+    /** 用户点停止时主动打断原生生成（不等协程取消传播，见 LocalLlmRuntime.interruptActiveGeneration） */
+    fun interruptGeneration() = LocalLlmRuntime.interruptActiveGeneration()
 }

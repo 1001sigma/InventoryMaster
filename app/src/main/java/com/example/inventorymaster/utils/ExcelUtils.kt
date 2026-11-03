@@ -14,6 +14,9 @@ import org.apache.poi.ss.usermodel.WorkbookFactory
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.InputStream
 import java.io.OutputStream
+import org.apache.poi.ss.usermodel.DateUtil
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 
 object ExcelUtils {
@@ -213,12 +216,11 @@ object ExcelUtils {
                 val idxLoc = fieldMap[FieldType.LOC] ?: -1
 
                 val batch = if (idxBatch != -1) getCellValue(row.getCell(idxBatch)) else ""
-                val expiryStr = if (idxExpiry != -1) getCellValue(row.getCell(idxExpiry)) else ""
+                val expiry = if (idxExpiry != -1) parseSafeExpiryDate(row.getCell(idxExpiry)) else 0L
                 val qtyStr = if (idxQty != -1) getCellValue(row.getCell(idxQty)) else "0"
                 val loc = if (idxLoc != -1) getCellValue(row.getCell(idxLoc)) else ""
 
                 // 数据清洗
-                val expiry = expiryStr.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L
                 val qty = qtyStr.toDoubleOrNull() ?: 0.0
 
                 // 构建 StockRecord (productKey 替代旧 di 字段)
@@ -319,10 +321,35 @@ object ExcelUtils {
             for ((colIdx, fieldType) in mapping) {
                 mergedFieldMap[fieldType] = colIdx
             }
-            val fieldMap = mergedFieldMap
+            // ==========================================
+            // 【完全重写】构建安全的字段映射表，彻底杜绝主键丢失
+            // ==========================================
+            val fieldMap = mutableMapOf<FieldType, Int>()
 
+            // 1. 先用智能识别（关键字）作为基础底子
+            for (schema in columnSchemas) {
+                if (schema.fieldType != FieldType.UNKNOWN) {
+                    fieldMap[schema.fieldType] = schema.columnIndex
+                }
+            }
+
+            // 2. 用 UI 传过来的显式映射进行绝对覆盖
+            // Kotlin 2.4 将恒假 isinstance 检查升级为错误：mapping 的静态类型就是
+            // Map<Int, FieldType>，原"双类型兼容"分支不可能成立，直接解构取值
+            mapping.forEach { (colIdx, fieldType) ->
+                if (colIdx != -1 && fieldType != FieldType.UNKNOWN) {
+                    // 核心：先清除可能存在的旧映射（防止一列多用冲突），再写入正确映射
+                    fieldMap.values.remove(colIdx)
+                    fieldMap[fieldType] = colIdx
+                }
+            }
+
+            // 3. 【核心调试日志】报错时看这一行就能秒懂
+            android.util.Log.d("ExcelUtils", ">>> 最终合并生成的字段映射表: $fieldMap")
+
+            // 4. 严格校验
             if (!fieldMap.containsKey(FieldType.DI) && !fieldMap.containsKey(FieldType.MAT_CODE)) {
-                throw Exception("未找到 'UDI/条码' 或 '物料编码' 列，无法识别商品")
+                throw Exception("未找到 'UDI/条码' 或 '物料编码' 列，无法识别商品。当前解析到的映射为: $fieldMap")
             }
 
             // 遍历数据行
@@ -350,6 +377,12 @@ object ExcelUtils {
                 val mfr = if (idxMfr != -1) getCellValue(row.getCell(idxMfr)) else "未知厂家"
                 val regCert = if (idxReg != -1) getCellValue(row.getCell(idxReg)) else ""
                 val unit = if (idxUnit != -1) getCellValue(row.getCell(idxUnit)) else ""
+
+                if (rawDi.isBlank() && rawMatCode.isBlank()) {
+                    // 如果这一行的主键全是空的，说明是幽灵空行或无效行，直接跳过，不调用 computeProductKey
+                    android.util.Log.w("ExcelUtils", "第 ${row.rowNum + 1} 行主键(DI和物料编码)全为空，已自动跳过该行。")
+                    continue
+                }
 
                 val productKey = ProductBase.computeProductKey(
                     di = rawDi.ifBlank { null },
@@ -381,11 +414,10 @@ object ExcelUtils {
                 val idxLoc = fieldMap[FieldType.LOC] ?: -1
 
                 val batch = if (idxBatch != -1) getCellValue(row.getCell(idxBatch)) else ""
-                val expiryStr = if (idxExpiry != -1) getCellValue(row.getCell(idxExpiry)) else ""
                 val qtyStr = if (idxQty != -1) getCellValue(row.getCell(idxQty)) else "0"
                 val loc = if (idxLoc != -1) getCellValue(row.getCell(idxLoc)) else ""
 
-                val expiry = expiryStr.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L
+                val expiry = if (idxExpiry != -1) parseSafeExpiryDate(row.getCell(idxExpiry)) else 0L
                 val qty = qtyStr.toDoubleOrNull() ?: 0.0
 
                 val record = StockRecord(
@@ -537,9 +569,7 @@ object ExcelUtils {
                     FieldType.QTY -> cell.setCellValue(r.quantity) // 系统库存
                     FieldType.LOC -> cell.setCellValue(r.location)
                     FieldType.EXPIRY -> {
-                        // 简单处理日期：假设 expiryDate 是 long 时间戳
-                        // 如果是 YYYYMMDD 格式的 Long，需要转换一下，这里假设是纯文本或时间戳
-                        cell.setCellValue(r.expiryDate.toString())
+                        cell.setCellValue(DateUtils.formatDateForDisplay(r.expiryDate))
                     }
 
                     FieldType.ACTUAL_QTY, FieldType.SYS_ACTUAL -> {
@@ -618,42 +648,78 @@ object ExcelUtils {
         } catch (e: Exception) { "" }
     }
 
-    // --- 产品库专用导出 (纯 ProductBase，无库存字段) ---
-    fun exportProductsToExcel(outputStream: OutputStream, products: List<ProductBase>) {
-        val workbook = XSSFWorkbook()
-        val sheet = workbook.createSheet("产品库")
-        sheet.defaultRowHeightInPoints = 20f
-        val headerStyle = workbook.createCellStyle().apply {
-            val font = workbook.createFont().apply { bold = true }
-            setFont(font)
-            alignment = HorizontalAlignment.CENTER
-            verticalAlignment = VerticalAlignment.CENTER
-        }
+    /**
+     * 安全解析效期日期：过滤残缺数据，支持原生日期拦截、分隔符补零与纯数字切片校验
+     * 解析失败或数据有歧义时强制返回 0L 兜底
+     */
+    private fun parseSafeExpiryDate(cell: Cell?): Long {
+        if (cell == null) return 0L
 
-        val headers = listOf("productKey", "DI", "名称", "规格", "型号", "厂家", "注册证号", "物料编码", "单位", "分类编码", "数据来源")
-        val headerRow = sheet.createRow(0)
-        headers.forEachIndexed { i, h ->
-            val cell = headerRow.createCell(i).apply { setCellValue(h); cellStyle = headerStyle }
-            sheet.setColumnWidth(i, 4000)
-        }
+        try {
+            // 1. 第一优先级拦截：Excel 原生日期格式 (完美绕过字符串解析)
+            if (cell.cellType == CellType.NUMERIC && DateUtil.isCellDateFormatted(cell)) {
+                val date = cell.dateCellValue
+                if (date != null) {
+                    val sdf = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
+                    return sdf.format(date).toLongOrNull() ?: 0L
+                }
+            }
 
-        products.forEachIndexed { rowIdx, p ->
-            val row = sheet.createRow(rowIdx + 1)
-            row.createCell(0).setCellValue(p.productKey)
-            row.createCell(1).setCellValue(p.di ?: "")
-            row.createCell(2).setCellValue(p.productName)
-            row.createCell(3).setCellValue(p.specification ?: "")
-            row.createCell(4).setCellValue(p.model ?: "")
-            row.createCell(5).setCellValue(p.manufacturer)
-            row.createCell(6).setCellValue(p.registrationCert ?: "")
-            row.createCell(7).setCellValue(p.materialCode ?: "")
-            row.createCell(8).setCellValue(p.unit ?: "")
-            row.createCell(9).setCellValue(p.categoryCode ?: "")
-            row.createCell(10).setCellValue(p.source)
-        }
+            // 提取字符串内容
+            val rawStr = getCellValue(cell).trim()
+            if (rawStr.isBlank()) return 0L
 
-        workbook.write(outputStream)
-        workbook.close()
+            // 2. 第二优先级：带有分隔符的字符串，按符号拆解并校验补零
+            if (rawStr.contains(Regex("[-/.]"))) {
+                val parts = rawStr.split(Regex("[-/.]"))
+                if (parts.size >= 3) {
+                    var y = parts[0].toIntOrNull() ?: return 0L
+                    val m = parts[1].toIntOrNull() ?: return 0L
+                    val d = parts[2].toIntOrNull() ?: return 0L
+
+                    // 年份两位数补全为 20xx
+                    if (y < 100) y += 2000
+
+                    // 月份和日期边界校验
+                    if (m !in 1..12 || d !in 1..31) return 0L
+
+                    // 补零拼接并返回
+                    val formatted = String.format("%04d%02d%02d", y, m, d)
+                    return formatted.toLongOrNull() ?: 0L
+                }
+                // 包含分隔符但结构不是3段，判定为乱码，熔断兜底
+                return 0L
+            }
+
+            // 3. 第三优先级：定长纯数字截取校验 (仅处理长度为 6 或 8)
+            val digits = rawStr.replace(Regex("[^0-9]"), "")
+            when (digits.length) {
+                8 -> {
+                    val y = digits.substring(0, 4).toIntOrNull() ?: return 0L
+                    val m = digits.substring(4, 6).toIntOrNull() ?: return 0L
+                    val d = digits.substring(6, 8).toIntOrNull() ?: return 0L
+
+                    if (m !in 1..12 || d !in 1..31) return 0L
+                    return digits.toLong()
+                }
+                6 -> {
+                    var y = digits.substring(0, 2).toIntOrNull() ?: return 0L
+                    val m = digits.substring(2, 4).toIntOrNull() ?: return 0L
+                    val d = digits.substring(4, 6).toIntOrNull() ?: return 0L
+
+                    if (m !in 1..12 || d !in 1..31) return 0L
+                    y += 2000
+
+                    val formatted = String.format("%04d%02d%02d", y, m, d)
+                    return formatted.toLongOrNull() ?: 0L
+                }
+                // 5位、7位或其他长度，直接判定为不可靠的歧义数据，熔断兜底
+                else -> return 0L
+            }
+        } catch (e: Exception) {
+            // 第四优先级：处理各种越界、转换异常，安全熔断
+            return 0L
+        }
     }
 
     // ==========================================

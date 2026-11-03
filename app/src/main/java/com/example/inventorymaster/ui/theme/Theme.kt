@@ -3,6 +3,7 @@ package com.example.inventorymaster.ui.theme
 import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -10,104 +11,141 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.WindowCompat
 
-// 默认使用我们在 ExtendedColors.kt 中定义的某个主题，比如 Teal
-private val DefaultThemeColors = ModernColorSchemes.Teal
+// 统一圆角档位：8 小组件(芯片/输入) / 12 列表项与小卡 / 16 标准卡片 / 24 大卡片 / 28 玻璃面板
+private val AppShapes = Shapes(
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(24.dp),
+    extraLarge = RoundedCornerShape(28.dp)
+)
 
 @Composable
 fun InventoryMasterTheme(
-    // 💡 优化点 1：将入参从单一的 seedColor 改为我们定义好的 ThemeColors 对象
-    themeColors: ThemeColors = DefaultThemeColors,
+    colorTuple: ColorTuple = ColorTupleDefaults.Teal.tuple,
     useDynamicColor: Boolean = false,
     darkTheme: Boolean = isSystemInDarkTheme(),
+    isAmoledMode: Boolean = false,
+    // 兼容历史调用参
+    themeColors: ThemeColors? = null,
     content: @Composable () -> Unit
 ) {
+    val effectiveTuple = themeColors?.asColorTuple() ?: colorTuple
+
     val colorScheme = when {
         useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context)
+            val baseScheme = if (darkTheme) dynamicDarkColorScheme(context)
             else dynamicLightColorScheme(context)
+
+            // 当开启深色且启用 AMOLED 纯黑时，对系统动态深色方案实施纯黑化覆写
+            if (darkTheme && isAmoledMode) {
+                baseScheme.copy(
+                    background = Color.Black,
+                    surface = Color.Black,
+                    surfaceVariant = Color(0xFF121212),
+                    outlineVariant = Color(0xFF2E2E2E)
+                )
+            } else {
+                baseScheme
+            }
         }
-        else -> generateColorScheme(themeColors, darkTheme)
+        else -> generateColorScheme(
+            tuple = effectiveTuple,
+            isDark = darkTheme,
+            isAmoled = isAmoledMode
+        )
     }
 
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            // 💡 优化点 2：将状态栏颜色设置为完全透明，配合现代沉浸式/全面屏 UI
-            window.statusBarColor = Color.Transparent.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.isAppearanceLightStatusBars = !darkTheme
+            insetsController.isAppearanceLightNavigationBars = !darkTheme
         }
     }
 
     MaterialTheme(
         colorScheme = colorScheme,
-        // 这里保留了你原有的 AppTypography，如果报错请确保对应的字体文件存在
-        typography = Typography(),
+        shapes = AppShapes,
+        typography = AppTypography,
         content = content
     )
 }
 
 /**
- * 根据预设的 ThemeColors 和当前深浅模式，生成完整的 Material 3 ColorScheme。
- * 核心主色使用 ThemeColors 中的定义，派生色（如 Container、OnColor）通过亮度偏移自动生成。
+ * 根据 ColorTuple、深浅模式及 AMOLED 状态，生成完整的 Material 3 ColorScheme。
+ * 核心色采用 ColorTuple 定义，派生色（如 Container、OnColor）通过亮度偏移自动生成。
  */
-fun generateColorScheme(colors: ThemeColors, isDark: Boolean): ColorScheme {
+fun generateColorScheme(
+    tuple: ColorTuple,
+    isDark: Boolean,
+    isAmoled: Boolean = false
+): ColorScheme {
+    val primary = tuple.primary
+    val secondary = tuple.resolvedSecondary
+    val tertiary = tuple.resolvedTertiary
+    val error = ModernColorSchemes.M3Error
+
     return if (isDark) {
         // 深色模式：主色调适度提亮以保证在深色背景上的对比度
+        val isPureBlack = isAmoled
         darkColorScheme(
-            primary = shiftLightness(colors.primary, 0.65f),
+            primary = shiftLightness(primary, 0.65f),
             onPrimary = Color(0xFF1A1A1A),
-            primaryContainer = shiftLightness(colors.primary, 0.25f),
-            onPrimaryContainer = shiftLightness(colors.primary, 0.90f),
+            primaryContainer = shiftLightness(primary, 0.25f),
+            onPrimaryContainer = shiftLightness(primary, 0.90f),
 
-            secondary = shiftLightness(colors.secondary, 0.65f),
+            secondary = shiftLightness(secondary, 0.65f),
             onSecondary = Color(0xFF1A1A1A),
-            secondaryContainer = shiftLightness(colors.secondary, 0.25f),
-            onSecondaryContainer = shiftLightness(colors.secondary, 0.90f),
+            secondaryContainer = shiftLightness(secondary, 0.25f),
+            onSecondaryContainer = shiftLightness(secondary, 0.90f),
 
-            tertiary = shiftLightness(colors.tertiary, 0.70f),
+            tertiary = shiftLightness(tertiary, 0.70f),
             onTertiary = Color(0xFF1A1A1A),
-            tertiaryContainer = shiftLightness(colors.tertiary, 0.25f),
-            onTertiaryContainer = shiftLightness(colors.tertiary, 0.90f),
+            tertiaryContainer = shiftLightness(tertiary, 0.25f),
+            onTertiaryContainer = shiftLightness(tertiary, 0.90f),
 
-            error = shiftLightness(colors.error, 0.65f),
+            error = shiftLightness(error, 0.65f),
             onError = Color(0xFF1A1A1A),
             errorContainer = Color(0xFF8C1D18),
             onErrorContainer = Color(0xFFF9DEDC),
 
-            // 使用高级的深空灰而不是纯黑
-            background = Color(0xFF121212),
+            // AMOLED 模式下全面纯黑化，普通深色模式保留 0D0D0D/141414 层次
+            background = if (isPureBlack) Color.Black else Color(0xFF0D0D0D),
             onBackground = Color(0xFFE3E3E3),
-            surface = Color(0xFF1E1E1E),
+            surface = if (isPureBlack) Color.Black else Color(0xFF141414),
             onSurface = Color(0xFFE3E3E3),
-            surfaceVariant = Color(0xFF333333),
+            surfaceVariant = if (isPureBlack) Color(0xFF121212) else Color(0xFF1E1E1E),
             onSurfaceVariant = Color(0xFFC4C4C4),
-            outline = Color(0xFF8E8E8E),
-            outlineVariant = Color(0xFF444444)
+            outline = if (isPureBlack) Color(0xFF666666) else Color(0xFF8E8E8E),
+            outlineVariant = if (isPureBlack) Color(0xFF2E2E2E) else Color(0xFF444444)
         )
     } else {
         // 浅色模式：直接使用定义的颜色，生成极度浅色的容器作为卡片底色
         lightColorScheme(
-            primary = colors.primary,
+            primary = primary,
             onPrimary = Color.White,
-            primaryContainer = shiftLightness(colors.primary, 0.94f),
-            onPrimaryContainer = shiftLightness(colors.primary, 0.20f),
+            primaryContainer = shiftLightness(primary, 0.94f),
+            onPrimaryContainer = shiftLightness(primary, 0.20f),
 
-            secondary = colors.secondary,
+            secondary = secondary,
             onSecondary = Color.White,
-            secondaryContainer = shiftLightness(colors.secondary, 0.94f),
-            onSecondaryContainer = shiftLightness(colors.secondary, 0.20f),
+            secondaryContainer = shiftLightness(secondary, 0.94f),
+            onSecondaryContainer = shiftLightness(secondary, 0.20f),
 
-            tertiary = colors.tertiary,
+            tertiary = tertiary,
             onTertiary = Color.White,
-            tertiaryContainer = shiftLightness(colors.tertiary, 0.94f),
-            onTertiaryContainer = shiftLightness(colors.tertiary, 0.20f),
+            tertiaryContainer = shiftLightness(tertiary, 0.94f),
+            onTertiaryContainer = shiftLightness(tertiary, 0.20f),
 
-            error = colors.error,
+            error = error,
             onError = Color.White,
             errorContainer = Color(0xFFF9DEDC),
             onErrorContainer = Color(0xFF410E0B),
@@ -124,6 +162,12 @@ fun generateColorScheme(colors: ThemeColors, isDark: Boolean): ColorScheme {
         )
     }
 }
+
+/**
+ * 兼容旧版本 ThemeColors 参数的重载
+ */
+fun generateColorScheme(colors: ThemeColors, isDark: Boolean): ColorScheme =
+    generateColorScheme(tuple = colors.asColorTuple(), isDark = isDark, isAmoled = false)
 
 /**
  * 保持色相和饱和度不变，改变颜色的亮度 (Lightness)

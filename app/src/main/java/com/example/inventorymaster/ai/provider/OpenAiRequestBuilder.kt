@@ -19,13 +19,29 @@ object OpenAiRequestBuilder {
         gson: Gson,
         model: String,
         messages: List<AiMessage>,
-        systemPrompt: String?,
-        tools: List<AiToolDefinition>?,
-        stream: Boolean
+        systemPrompt: String? = null,
+        tools: List<AiToolDefinition>? = null,
+        stream: Boolean = false,
+        temperatureEnabled: Boolean = false,
+        temperature: Float = 0.7f,
+        topPEnabled: Boolean = false,
+        topP: Float = 0.95f,
+        maxTokensEnabled: Boolean = false,
+        maxTokens: Int = 4096
     ): String {
         val json = JsonObject()
         json.addProperty("model", model)
         json.addProperty("stream", stream)
+
+        if (temperatureEnabled) {
+            json.addProperty("temperature", temperature)
+        }
+        if (topPEnabled) {
+            json.addProperty("top_p", topP)
+        }
+        if (maxTokensEnabled && maxTokens > 0) {
+            json.addProperty("max_tokens", maxTokens)
+        }
 
         val messagesArray = JsonArray()
         systemPrompt?.let {
